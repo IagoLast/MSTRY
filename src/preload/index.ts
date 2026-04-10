@@ -1,6 +1,12 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-import type { ElectronApi, TerminalDataEvent, TerminalExitEvent } from '../shared/contracts'
+import type {
+  ClaudeSessionInfo,
+  ElectronApi,
+  TerminalDataEvent,
+  TerminalExitEvent,
+  TerminalProcessEvent
+} from '../shared/contracts'
 
 const api: ElectronApi = {
   workspace: {
@@ -21,6 +27,7 @@ const api: ElectronApi = {
     resize: (sessionId, cols, rows) =>
       ipcRenderer.invoke('terminal:resize', sessionId, cols, rows),
     close: (sessionId) => ipcRenderer.invoke('terminal:close', sessionId),
+    setActiveSession: (sessionId) => ipcRenderer.invoke('terminal:set-active-session', sessionId),
     onData: (listener) => {
       const wrappedListener = (_event: Electron.IpcRendererEvent, payload: TerminalDataEvent) => {
         listener(payload)
@@ -36,7 +43,39 @@ const api: ElectronApi = {
 
       ipcRenderer.on('terminal:exit', wrappedListener)
       return () => ipcRenderer.off('terminal:exit', wrappedListener)
+    },
+    onProcessChange: (listener) => {
+      const wrappedListener = (_event: Electron.IpcRendererEvent, payload: TerminalProcessEvent) => {
+        listener(payload)
+      }
+
+      ipcRenderer.on('terminal:process-change', wrappedListener)
+      return () => ipcRenderer.off('terminal:process-change', wrappedListener)
+    },
+    onControlInput: (listener) => {
+      const wrappedListener = (_event: Electron.IpcRendererEvent, data: string) => {
+        listener(data)
+      }
+
+      ipcRenderer.on('terminal:control-input', wrappedListener)
+      return () => ipcRenderer.off('terminal:control-input', wrappedListener)
     }
+  },
+  claude: {
+    onSessionChange: (listener) => {
+      const wrappedListener = (
+        _event: Electron.IpcRendererEvent,
+        payload: ClaudeSessionInfo[]
+      ) => {
+        listener(payload)
+      }
+
+      ipcRenderer.on('claude:session-change', wrappedListener)
+      return () => ipcRenderer.off('claude:session-change', wrappedListener)
+    },
+    isHooksEnabled: () => ipcRenderer.invoke('claude:is-hooks-enabled'),
+    enableHooks: () => ipcRenderer.invoke('claude:enable-hooks'),
+    disableHooks: () => ipcRenderer.invoke('claude:disable-hooks')
   }
 }
 

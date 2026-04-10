@@ -58,12 +58,24 @@ const getTerminalTheme = () =>
 interface WorktreeTerminalProps {
   active: boolean
   cwd: string
+  onNewTab?: () => void
+  onCloseTab?: () => void
+  onSessionCreated?: (sessionId: string, pid: number) => void
 }
 
-export function WorktreeTerminal({ active, cwd }: WorktreeTerminalProps) {
+export function WorktreeTerminal({ active, cwd, onNewTab, onCloseTab, onSessionCreated }: WorktreeTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
+  const sessionIdRef = useRef<string | null>(null)
+  const activeRef = useRef(active)
+  const onNewTabRef = useRef(onNewTab)
+  const onCloseTabRef = useRef(onCloseTab)
+  const onSessionCreatedRef = useRef(onSessionCreated)
+  activeRef.current = active
+  onNewTabRef.current = onNewTab
+  onCloseTabRef.current = onCloseTab
+  onSessionCreatedRef.current = onSessionCreated
 
   useEffect(() => {
     if (!containerRef.current) {
@@ -90,6 +102,26 @@ export function WorktreeTerminal({ active, cwd }: WorktreeTerminalProps) {
     const fitAddon = new FitAddon()
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
+
+    terminal.attachCustomKeyEventHandler((event) => {
+      // Only intercept Cmd (metaKey) shortcuts for tab management.
+      // Ctrl key combos (Ctrl+R, Ctrl+W, etc.) must pass through to the terminal.
+      if (!event.metaKey || event.type !== 'keydown') {
+        return true
+      }
+
+      if (event.key === 't') {
+        onNewTabRef.current?.()
+        return false
+      }
+
+      if (event.key === 'w') {
+        onCloseTabRef.current?.()
+        return false
+      }
+
+      return true
+    })
 
     terminal.loadAddon(fitAddon)
     terminal.open(containerRef.current)
@@ -127,8 +159,31 @@ export function WorktreeTerminal({ active, cwd }: WorktreeTerminalProps) {
 
     resizeObserver.observe(containerRef.current)
 
+    // Poll every 200ms to keep the terminal size in sync with the container,
+    // since the initial fit may fire before the layout is fully resolved.
+    let lastCols = terminal.cols
+    let lastRows = terminal.rows
+    const fitPollInterval = setInterval(() => {
+      fitAddon.fit()
+      if (sessionId && (terminal.cols !== lastCols || terminal.rows !== lastRows)) {
+        lastCols = terminal.cols
+        lastRows = terminal.rows
+        void electree.terminal.resize(sessionId, terminal.cols, terminal.rows)
+      }
+    }, 200)
+
     const terminalInputDisposable = terminal.onData((data) => {
       if (sessionId) {
+        void electree.terminal.write(sessionId, data)
+      }
+    })
+
+    // Receive Ctrl+key combos forwarded from the main process (which intercepts
+    // them via before-input-event to prevent Chromium from swallowing them).
+    const offControlInput = electree.terminal.onControlInput((data) => {
+      console.log('[control-input] received', JSON.stringify(data), { sessionId, active: activeRef.current })
+      if (sessionId && activeRef.current) {
+        console.log('[control-input] writing to PTY session', sessionId)
         void electree.terminal.write(sessionId, data)
       }
     })
@@ -139,12 +194,17 @@ export function WorktreeTerminal({ active, cwd }: WorktreeTerminalProps) {
         cols: terminal.cols,
         rows: terminal.rows
       })
-      .then((createdSessionId) => {
+      .then((result) => {
         if (disposed) {
           return
         }
 
-        sessionId = createdSessionId
+        sessionId = result.sessionId
+        sessionIdRef.current = result.sessionId
+        if (activeRef.current) {
+          void electree.terminal.setActiveSession(result.sessionId)
+        }
+        onSessionCreatedRef.current?.(result.sessionId, result.pid)
       })
       .catch((error: unknown) => {
         const message = error instanceof Error ? error.message : 'No se pudo abrir la terminal.'
@@ -153,10 +213,12 @@ export function WorktreeTerminal({ active, cwd }: WorktreeTerminalProps) {
 
     return () => {
       disposed = true
+      clearInterval(fitPollInterval)
       mql.removeEventListener('change', handleThemeChange)
       resizeObserver.disconnect()
       offData()
       offExit()
+      offControlInput()
       terminalInputDisposable.dispose()
 
       if (sessionId) {
@@ -167,6 +229,7 @@ export function WorktreeTerminal({ active, cwd }: WorktreeTerminalProps) {
 
       terminalRef.current = null
       fitAddonRef.current = null
+      sessionIdRef.current = null
     }
   }, [cwd])
 
@@ -182,9 +245,20 @@ export function WorktreeTerminal({ active, cwd }: WorktreeTerminalProps) {
       return
     }
 
+    const electree = getElectronBridge()
+
+    const sid = sessionIdRef.current
+    if (sid) {
+      void electree.terminal.setActiveSession(sid)
+    }
+
     requestAnimationFrame(() => {
       fitAddon.fit()
       terminal.focus()
+
+      if (sid) {
+        void electree.terminal.resize(sid, terminal.cols, terminal.rows)
+      }
     })
   }, [active])
 

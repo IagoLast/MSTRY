@@ -133,9 +133,15 @@
 
 .xterm {
   height: 100%;
+  background-color: var(--terminal-bg);
+}
+
+.xterm-screen {
+  min-height: 100%;
 }
 
 .xterm-viewport {
+  background-color: var(--terminal-bg) !important;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
 }
