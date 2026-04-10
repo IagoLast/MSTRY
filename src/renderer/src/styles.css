@@ -1,0 +1,141 @@
+@import "tailwindcss";
+
+:root {
+  /* Surfaces */
+  --bg: #ffffff;
+  --sidebar-bg: #f5f5f6;
+  --surface-bg: #ffffff;
+  --terminal-bg: #f5f5f6;
+
+  /* Text */
+  --fg: #1c1c1c;
+  --fg-secondary: #52525b;
+  --fg-muted: #71717a;
+  --fg-icon: #71717a;
+
+  /* Borders */
+  --sep: rgba(0, 0, 0, 0.1);
+
+  /* Interactive */
+  --item-active: rgba(0, 0, 0, 0.06);
+  --item-hover: rgba(0, 0, 0, 0.04);
+  --overlay-color: rgba(0, 0, 0, 0.04);
+  --overlay-hover-color: rgba(0, 0, 0, 0.06);
+
+  /* Error */
+  --error-fg: #b91c1c;
+
+  /* Focus */
+  --focus-ring-color: rgba(0, 0, 0, 0.15);
+
+  /* Misc */
+  --inset-glow: rgba(0, 0, 0, 0.03);
+  --scrollbar-thumb: rgba(0, 0, 0, 0.14);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111111;
+    --sidebar-bg: #151515;
+    --surface-bg: #1e1e1e;
+    --terminal-bg: #181818;
+
+    --fg: #d4d4d4;
+    --fg-secondary: #d4d4d8;
+    --fg-muted: #71717a;
+    --fg-icon: #a1a1aa;
+
+    --sep: rgba(255, 255, 255, 0.08);
+
+    --item-active: rgba(255, 255, 255, 0.08);
+    --item-hover: rgba(255, 255, 255, 0.04);
+    --overlay-color: rgba(255, 255, 255, 0.04);
+    --overlay-hover-color: rgba(255, 255, 255, 0.06);
+
+    --error-fg: #fecaca;
+
+    --focus-ring-color: rgba(255, 255, 255, 0.2);
+
+    --inset-glow: rgba(255, 255, 255, 0.03);
+    --scrollbar-thumb: rgba(255, 255, 255, 0.14);
+  }
+}
+
+@theme inline {
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-sidebar: var(--sidebar-bg);
+  --color-surface: var(--surface-bg);
+  --color-terminal: var(--terminal-bg);
+  --color-secondary: var(--fg-secondary);
+  --color-muted: var(--fg-muted);
+  --color-icon: var(--fg-icon);
+  --color-separator: var(--sep);
+  --color-item-active: var(--item-active);
+  --color-item-hover: var(--item-hover);
+  --color-overlay: var(--overlay-color);
+  --color-overlay-hover: var(--overlay-hover-color);
+  --color-error: var(--error-fg);
+  --color-focus-ring: var(--focus-ring-color);
+
+  --font-sans:
+    "SF Pro Display",
+    "Inter",
+    "Segoe UI",
+    ui-sans-serif,
+    system-ui,
+    -apple-system,
+    BlinkMacSystemFont,
+    sans-serif;
+  --font-mono:
+    "SF Mono",
+    "JetBrains Mono",
+    ui-monospace,
+    SFMono-Regular,
+    Menlo,
+    Monaco,
+    Consolas,
+    monospace;
+}
+
+@layer base {
+  * {
+    @apply border-separator;
+  }
+
+  html,
+  body,
+  #root {
+    @apply min-h-screen;
+  }
+
+  body {
+    @apply bg-background font-sans text-foreground antialiased;
+  }
+
+  button,
+  input {
+    font: inherit;
+  }
+
+  code {
+    @apply font-mono;
+  }
+}
+
+.drag-region {
+  -webkit-app-region: drag;
+}
+
+.no-drag {
+  -webkit-app-region: no-drag;
+}
+
+.xterm {
+  height: 100%;
+}
+
+.xterm-viewport {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
