@@ -100,6 +100,31 @@ export interface ClaudeSessionInfo {
   shellPid: number
 }
 
+export interface GeminiSessionInfo {
+  sessionId: string
+  status: 'working' | 'idle'
+  cwd: string
+  name: string | null
+  prompt: string | null
+  shellPid: number
+}
+
+export interface CodexSessionInfo {
+  sessionId: string
+  status: 'working' | 'idle'
+  cwd: string
+  name: string | null
+  prompt: string | null
+  shellPid: number
+}
+
+export interface CodingToolInfo {
+  id: string
+  name: string
+  installed: boolean
+  description: string
+}
+
 export interface ElectronApi {
   workspace: {
     getConfig: () => Promise<AppConfig>
@@ -111,7 +136,7 @@ export interface ElectronApi {
     setDefaultTabCommand: (command: string) => Promise<AppConfig>
   }
   worktrees: {
-    list: () => Promise<WorkspaceItem[]>
+    list: (rootPath: string, repoPath: string | null) => Promise<WorkspaceItem[]>
     create: (input: CreateWorktreeInput) => Promise<WorkspaceItem>
     remove: (input: DeleteWorktreeInput) => Promise<DeleteWorktreeResult>
   }
@@ -147,9 +172,25 @@ export interface ElectronApi {
     enableHooks: () => Promise<void>
     disableHooks: () => Promise<void>
   }
+  gemini: {
+    onSessionChange: (listener: (sessions: GeminiSessionInfo[]) => void) => () => void
+    isHooksEnabled: () => Promise<boolean>
+    enableHooks: () => Promise<void>
+    disableHooks: () => Promise<void>
+  }
+  codex: {
+    onSessionChange: (listener: (sessions: CodexSessionInfo[]) => void) => () => void
+    isHooksEnabled: () => Promise<boolean>
+    enableHooks: () => Promise<void>
+    disableHooks: () => Promise<void>
+  }
   cli: {
     isInstalled: () => Promise<boolean>
     install: () => Promise<void>
     uninstall: () => Promise<void>
+  }
+  tools: {
+    checkAll: () => Promise<CodingToolInfo[]>
+    install: (toolId: string) => Promise<void>
   }
 }

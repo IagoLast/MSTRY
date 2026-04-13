@@ -65,7 +65,7 @@ export function CommandPalette({ commands, onClose }: CommandPaletteProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[20vh]"
+      className="no-drag fixed inset-0 z-50 flex items-start justify-center pt-[20vh]"
       onClick={onClose}
       onKeyDown={(e) => {
         if (e.key === 'Escape') onClose()
@@ -87,7 +87,8 @@ export function CommandPalette({ commands, onClose }: CommandPaletteProps) {
           <button
             type="button"
             onClick={onClose}
-            className="flex size-6 items-center justify-center rounded text-muted hover:text-secondary"
+            className="no-drag flex size-6 items-center justify-center rounded text-muted hover:text-secondary"
+            aria-label="Close menu"
           >
             <VscClose className="size-3.5" />
           </button>

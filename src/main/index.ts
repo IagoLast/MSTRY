@@ -12,7 +12,10 @@ import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 
 import { installCli, isCliInstalled, uninstallCli } from './cli-install'
+import { checkAllTools, installTool } from './coding-tools'
 import { disableClaudeHooks, enableClaudeHooks, isClaudeHooksEnabled } from './claude-hooks-config'
+import { disableCodexHooks, enableCodexHooks, isCodexHooksEnabled } from './codex-hooks-config'
+import { disableGeminiHooks, enableGeminiHooks, isGeminiHooksEnabled } from './gemini-hooks-config'
 import {
   addProjectPath,
   getAppConfig,
@@ -22,6 +25,8 @@ import {
   setDefaultTabCommand
 } from './config'
 import { ClaudeStatusWatcher } from './claude-status'
+import { CodexStatusWatcher } from './codex-status'
+import { GeminiStatusWatcher } from './gemini-status'
 import { createWorktree, listWorkspaceItems, removeWorktree } from './git'
 import { loadTabState, saveTabState } from './tab-store'
 import { TerminalManager } from './terminal-manager'
@@ -38,6 +43,8 @@ import type {
 let mainWindow: BrowserWindow | null = null
 const terminalManager = new TerminalManager()
 const claudeStatus = new ClaudeStatusWatcher()
+const codexStatus = new CodexStatusWatcher()
+const geminiStatus = new GeminiStatusWatcher()
 
 interface ReadyAppConfig extends AppConfig {
   activeProject: Project
@@ -105,9 +112,8 @@ const registerIpc = () => {
     return addProjectPath(result.filePaths[0])
   })
 
-  ipcMain.handle('worktrees:list', async () => {
-    const config = await requireActiveProject()
-    return listWorkspaceItems(config.activeProject.rootPath, config.activeProject.repoPath)
+  ipcMain.handle('worktrees:list', async (_event, rootPath: string, repoPath: string | null) => {
+    return listWorkspaceItems(rootPath, repoPath)
   })
 
   ipcMain.handle('worktrees:create', async (_event, input: CreateWorktreeInput) => {
@@ -167,9 +173,20 @@ const registerIpc = () => {
   ipcMain.handle('claude:enable-hooks', () => enableClaudeHooks())
   ipcMain.handle('claude:disable-hooks', () => disableClaudeHooks())
 
+  ipcMain.handle('gemini:is-hooks-enabled', () => isGeminiHooksEnabled())
+  ipcMain.handle('gemini:enable-hooks', () => enableGeminiHooks())
+  ipcMain.handle('gemini:disable-hooks', () => disableGeminiHooks())
+
+  ipcMain.handle('codex:is-hooks-enabled', () => isCodexHooksEnabled())
+  ipcMain.handle('codex:enable-hooks', () => enableCodexHooks())
+  ipcMain.handle('codex:disable-hooks', () => disableCodexHooks())
+
   ipcMain.handle('cli:is-installed', () => isCliInstalled())
   ipcMain.handle('cli:install', () => installCli())
   ipcMain.handle('cli:uninstall', () => uninstallCli())
+
+  ipcMain.handle('tools:check-all', () => checkAllTools())
+  ipcMain.handle('tools:install', (_event, toolId: string) => installTool(toolId))
 }
 
 function fixPath(): void {
@@ -308,7 +325,21 @@ app.whenReady().then(async () => {
     }
   })
 
+  codexStatus.on('change', (sessions) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('codex:session-change', sessions)
+    }
+  })
+
+  geminiStatus.on('change', (sessions) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('gemini:session-change', sessions)
+    }
+  })
+
   claudeStatus.start()
+  codexStatus.start()
+  geminiStatus.start()
 
   try {
     const persistedTabs = await loadTabState()
@@ -354,6 +385,8 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   claudeStatus.stop()
+  codexStatus.stop()
+  geminiStatus.stop()
   // Only detach PTYs — tmux sessions survive for reattach on next launch.
   terminalManager.disposeAll()
 })

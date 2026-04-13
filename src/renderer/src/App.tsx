@@ -31,13 +31,23 @@ import {
   VscRefresh,
   VscRepo,
   VscSettingsGear,
-  VscSortPrecedence,
+  VscListOrdered,
+  VscSearch,
   VscSourceControl,
   VscTerminalBash,
   VscTrash
 } from 'react-icons/vsc'
+import { SiOpenai } from 'react-icons/si'
 
-import type { AppConfig, ClaudeSessionInfo, PersistedTab, Project, WorkspaceItem } from '../../shared/contracts'
+import type {
+  AppConfig,
+  ClaudeSessionInfo,
+  CodexSessionInfo,
+  GeminiSessionInfo,
+  PersistedTab,
+  Project,
+  WorkspaceItem
+} from '../../shared/contracts'
 import { CommandPalette, type CommandItem } from './components/command-palette'
 import { SettingsPanel } from './components/settings-panel'
 import { WorktreeTerminal } from './components/worktree-terminal'
@@ -76,8 +86,27 @@ const createRestoredTab = (persisted: PersistedTab): TerminalTab => ({
   processName: null
 })
 
-const isClaudeProcess = (name: string | null) =>
-  name != null && /\bclaude\b/i.test(name)
+const isClaudeProcess = (name: string | null, isFromHook: boolean) => {
+  if (name == null) return false
+  if (/\bclaude\b/i.test(name)) return true
+  if (isFromHook && /\bnode\b/i.test(name)) return true
+  return false
+}
+
+const isGeminiProcess = (name: string | null, isFromHook: boolean) => {
+  if (name == null) return false
+  if (/\bgemini\b/i.test(name)) return true
+  // If we have hook info, 'node' is a valid process name for Gemini
+  if (isFromHook && /\bnode\b/i.test(name)) return true
+  return false
+}
+
+const isCodexProcess = (name: string | null, isFromHook: boolean) => {
+  if (name == null) return false
+  if (/\bcodex\b/i.test(name)) return true
+  if (isFromHook && /\bnode\b/i.test(name)) return true
+  return false
+}
 
 const selectedWorkspaceQueryKey = ['ui', 'selected-workspace'] as const
 
@@ -157,12 +186,16 @@ export function App() {
   const [projectsCollapsed, setProjectsCollapsed] = useState(false)
   const [worktreesCollapsed, setWorktreesCollapsed] = useState(false)
   const [agentsCollapsed, setAgentsCollapsed] = useState(false)
+  const [agentFilter, setAgentFilter] = useState('')
   const [draftWorktreeName, setDraftWorktreeName] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sidebarWidth, setSidebarWidth] = useState(340)
   const [mouseMode, setMouseMode] = useState(false)
+  const [claudeSessions, setClaudeSessions] = useState<ClaudeSessionInfo[]>([])
+  const [codexSessions, setCodexSessions] = useState<CodexSessionInfo[]>([])
+  const [geminiSessions, setGeminiSessions] = useState<GeminiSessionInfo[]>([])
   const isResizing = useRef(false)
 
   const dndSensors = useSensors(
@@ -199,7 +232,7 @@ export function App() {
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces', activeProject?.rootPath],
-    queryFn: () => getElectronBridge().worktrees.list(),
+    queryFn: () => getElectronBridge().worktrees.list(activeProject!.rootPath, activeProject!.repoPath),
     enabled: Boolean(activeProject?.rootPath)
   })
 
@@ -220,7 +253,6 @@ export function App() {
     onSuccess: (config) => {
       queryClient.setQueryData(['app-config'], config)
       setDraftWorktreeName(null)
-      queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }
   })
 
@@ -419,12 +451,23 @@ export function App() {
     return off
   }, [])
 
-  const [claudeSessions, setClaudeSessions] = useState<ClaudeSessionInfo[]>([])
   const tabsRestoredRef = useRef(false)
 
   useEffect(() => {
     const electree = getElectronBridge()
     const off = electree.claude.onSessionChange(setClaudeSessions)
+    return off
+  }, [])
+
+  useEffect(() => {
+    const electree = getElectronBridge()
+    const off = electree.codex.onSessionChange(setCodexSessions)
+    return off
+  }, [])
+
+  useEffect(() => {
+    const electree = getElectronBridge()
+    const off = electree.gemini.onSessionChange(setGeminiSessions)
     return off
   }, [])
 
@@ -794,7 +837,7 @@ export function App() {
     <div className="min-h-screen bg-background text-foreground">
       <div className="flex h-screen overflow-hidden">
         <aside
-          className={cn('flex shrink-0 flex-col overflow-hidden bg-sidebar', sidebarOpen ? 'border-r' : 'border-r-0')}
+          className={cn('flex shrink-0 flex-col overflow-clip bg-sidebar', sidebarOpen ? 'border-r' : 'border-r-0')}
           style={{ width: sidebarOpen ? sidebarWidth : 0 }}
         >
           {/* Drag region for macOS traffic lights */}
@@ -857,7 +900,7 @@ export function App() {
                 aria-label="Sort alphabetically"
                 title="Sort alphabetically"
               >
-                <VscSortPrecedence className="size-4" />
+                <VscListOrdered className="size-4" />
               </Button>
 
               <Button
@@ -1015,7 +1058,7 @@ export function App() {
               aria-label="Sort alphabetically"
               title="Sort alphabetically"
             >
-              <VscSortPrecedence className="size-4" />
+              <VscListOrdered className="size-4" />
             </Button>
 
             {isGitProject ? (
@@ -1143,11 +1186,38 @@ export function App() {
               aria-label="Sort alphabetically"
               title="Sort alphabetically"
             >
-              <VscSortPrecedence className="size-4" />
+              <VscListOrdered className="size-4" />
             </Button>
           </div>
 
           {!agentsCollapsed ? (
+            <>
+            {tabs.length > 0 ? (
+              <div className="shrink-0 border-b px-2 py-1.5">
+                <div className="flex items-center gap-1.5 rounded-md bg-overlay px-2 py-1">
+                  <VscSearch className="size-3 shrink-0 text-muted" />
+                  <input
+                    type="text"
+                    value={agentFilter}
+                    onChange={(e) => setAgentFilter(e.target.value)}
+                    placeholder="Filtrar agentes..."
+                    className="min-w-0 flex-1 bg-transparent text-xs text-foreground placeholder:text-muted outline-none"
+                    spellCheck={false}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                  />
+                  {agentFilter && (
+                    <button
+                      type="button"
+                      onClick={() => setAgentFilter('')}
+                      className="text-muted hover:text-foreground"
+                    >
+                      <VscClose className="size-3" />
+                    </button>
+                  )}
+                </div>
+              </div>
+            ) : null}
             <ScrollArea className="min-h-0 flex-1">
               <div className="px-2 py-2">
                 {tabs.length === 0 ? (
@@ -1161,26 +1231,41 @@ export function App() {
                 >
                   <SortableContext items={tabs.map((t) => t.id)} strategy={verticalListSortingStrategy}>
                 {tabs.map((tab) => {
-                  const workspace = workspacesQuery.data?.find((w) => w.path === tab.workspacePath)
-                  const workspaceLabel = workspace?.branch ?? workspace?.name ?? tab.workspacePath.split('/').pop() ?? 'workspace'
                   const projects = appConfigQuery.data?.projects ?? []
                   const ownerProject = projects.find((project) => {
                     if (tab.workspacePath === project.rootPath) return true
                     if (project.worktreeRoot && tab.workspacePath.startsWith(project.worktreeRoot)) return true
                     return false
                   })
+                  const cachedWorkspaces = ownerProject
+                    ? (queryClient.getQueryData<WorkspaceItem[]>(['workspaces', ownerProject.rootPath]) ?? [])
+                    : []
+                  const workspace = cachedWorkspaces.find((w) => w.path === tab.workspacePath)
+                  const workspaceLabel = workspace?.branch ?? workspace?.name ?? tab.workspacePath.split('/').pop() ?? 'workspace'
                   const projectLabel = ownerProject?.name ?? ''
                   const headerLabel = projectLabel ? `${projectLabel} / ${workspaceLabel}` : workspaceLabel
                   const claudeInfo = tab.pid
                     ? claudeSessions.find((s) => s.shellPid === tab.pid) ?? null
                     : null
-                  const isClaude = claudeInfo !== null || isClaudeProcess(tab.processName)
+                  const codexInfo = tab.pid
+                    ? codexSessions.find((s) => s.shellPid === tab.pid) ?? null
+                    : null
+                  const geminiInfo = tab.pid
+                    ? geminiSessions.find((s) => s.shellPid === tab.pid) ?? null
+                    : null
+                  const isClaude = claudeInfo !== null || isClaudeProcess(tab.processName, claudeInfo !== null)
+                  const isCodex = codexInfo !== null || isCodexProcess(tab.processName, codexInfo !== null)
+                  const isGemini = geminiInfo !== null || isGeminiProcess(tab.processName, geminiInfo !== null)
                   const isActive =
                     selectedWorkspacePath === tab.workspacePath &&
                     activeTabId[tab.workspacePath] === tab.id
                   const label = isClaude
                     ? (claudeInfo?.name ?? claudeInfo?.prompt ?? 'Claude')
-                    : 'Terminal'
+                    : isCodex
+                      ? (codexInfo?.name ?? codexInfo?.prompt ?? 'Codex')
+                    : isGemini
+                      ? (geminiInfo?.name ?? geminiInfo?.prompt ?? 'Gemini')
+                      : 'Terminal'
 
                   return (
                     <SortableAgentItem key={tab.id} id={tab.id}>
@@ -1205,6 +1290,24 @@ export function App() {
                           >
                             C
                           </span>
+                        ) : isCodex ? (
+                          <SiOpenai
+                            className={cn(
+                              'size-3',
+                              codexInfo?.status === 'working' && 'text-green-400',
+                              codexInfo?.status === 'idle' && 'text-sky-400'
+                            )}
+                          />
+                        ) : isGemini ? (
+                          <span
+                            className={cn(
+                              'text-[10px] font-bold',
+                              geminiInfo?.status === 'working' && 'text-green-400',
+                              geminiInfo?.status === 'idle' && 'text-orange-400'
+                            )}
+                          >
+                            G
+                          </span>
                         ) : (
                           <VscTerminalBash className="size-3.5" />
                         )}
@@ -1215,6 +1318,24 @@ export function App() {
                               claudeInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
                             )}
                             title={claudeInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                          />
+                        ) : null}
+                        {isCodex && codexInfo ? (
+                          <span
+                            className={cn(
+                              'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-sidebar',
+                              codexInfo.status === 'working' ? 'bg-green-400' : 'bg-sky-400 animate-pulse'
+                            )}
+                            title={codexInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                          />
+                        ) : null}
+                        {isGemini && geminiInfo ? (
+                          <span
+                            className={cn(
+                              'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-sidebar',
+                              geminiInfo.status === 'working' ? 'bg-green-400' : 'bg-orange-400 animate-pulse'
+                            )}
+                            title={geminiInfo.status === 'working' ? 'Working...' : 'Needs input'}
                           />
                         ) : null}
                       </span>
@@ -1254,8 +1375,9 @@ export function App() {
                 </DndContext>
               </div>
             </ScrollArea>
-          ) : null}
-        </aside>
+          </>
+        ) : null}
+      </aside>
 
         {/* Resize handle */}
         {sidebarOpen ? (
@@ -1290,7 +1412,15 @@ export function App() {
                 const claudeInfo = tab.pid
                   ? claudeSessions.find((s) => s.shellPid === tab.pid) ?? null
                   : null
-                const isClaude = claudeInfo !== null || isClaudeProcess(tab.processName)
+                const codexInfo = tab.pid
+                  ? codexSessions.find((s) => s.shellPid === tab.pid) ?? null
+                  : null
+                const geminiInfo = tab.pid
+                  ? geminiSessions.find((s) => s.shellPid === tab.pid) ?? null
+                  : null
+                const isClaude = claudeInfo !== null || isClaudeProcess(tab.processName, claudeInfo !== null)
+                const isCodex = codexInfo !== null || isCodexProcess(tab.processName, codexInfo !== null)
+                const isGemini = geminiInfo !== null || isGeminiProcess(tab.processName, geminiInfo !== null)
 
                 return (
                   <button
@@ -1323,6 +1453,24 @@ export function App() {
                         >
                           C
                         </span>
+                      ) : isCodex ? (
+                        <SiOpenai
+                          className={cn(
+                            'size-3',
+                            codexInfo?.status === 'working' && 'text-green-400',
+                            codexInfo?.status === 'idle' && 'text-sky-400'
+                          )}
+                        />
+                      ) : isGemini ? (
+                        <span
+                          className={cn(
+                            'text-[10px] font-bold',
+                            geminiInfo?.status === 'working' && 'text-green-400',
+                            geminiInfo?.status === 'idle' && 'text-orange-400'
+                          )}
+                        >
+                          G
+                        </span>
                       ) : (
                         <VscTerminalBash className="size-3.5" />
                       )}
@@ -1335,11 +1483,33 @@ export function App() {
                           title={claudeInfo.status === 'working' ? 'Working...' : 'Needs input'}
                         />
                       ) : null}
+                      {isCodex && codexInfo ? (
+                        <span
+                          className={cn(
+                            'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-surface',
+                            codexInfo.status === 'working' ? 'bg-green-400' : 'bg-sky-400 animate-pulse'
+                          )}
+                          title={codexInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                        />
+                      ) : null}
+                      {isGemini && geminiInfo ? (
+                        <span
+                          className={cn(
+                            'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-surface',
+                            geminiInfo.status === 'working' ? 'bg-green-400' : 'bg-orange-400 animate-pulse'
+                          )}
+                          title={geminiInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                        />
+                      ) : null}
                     </span>
                     <span className="truncate">
                       {isClaude
                         ? (claudeInfo?.name ?? claudeInfo?.prompt ?? 'Claude')
-                        : (selectedWorkspace?.branch ?? selectedWorkspace?.name ?? 'Terminal')}
+                        : isCodex
+                          ? (codexInfo?.name ?? codexInfo?.prompt ?? 'Codex')
+                        : isGemini
+                          ? (geminiInfo?.name ?? geminiInfo?.prompt ?? 'Gemini')
+                          : (selectedWorkspace?.branch ?? selectedWorkspace?.name ?? 'Terminal')}
                     </span>
                     {currentTabs.length > 1 ? (
                       <span

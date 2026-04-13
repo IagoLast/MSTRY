@@ -2,7 +2,9 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 import type {
   ClaudeSessionInfo,
+  CodexSessionInfo,
   ElectronApi,
+  GeminiSessionInfo,
   PersistedTabState,
   TerminalDataEvent,
   TerminalExitEvent,
@@ -20,7 +22,7 @@ const api: ElectronApi = {
     setDefaultTabCommand: (command) => ipcRenderer.invoke('workspace:set-default-tab-command', command)
   },
   worktrees: {
-    list: () => ipcRenderer.invoke('worktrees:list'),
+    list: (rootPath, repoPath) => ipcRenderer.invoke('worktrees:list', rootPath, repoPath),
     create: (input) => ipcRenderer.invoke('worktrees:create', input),
     remove: (input) => ipcRenderer.invoke('worktrees:remove', input)
   },
@@ -103,10 +105,46 @@ const api: ElectronApi = {
     enableHooks: () => ipcRenderer.invoke('claude:enable-hooks'),
     disableHooks: () => ipcRenderer.invoke('claude:disable-hooks')
   },
+  gemini: {
+    onSessionChange: (listener) => {
+      const wrappedListener = (
+        _event: Electron.IpcRendererEvent,
+        payload: GeminiSessionInfo[]
+      ) => {
+        listener(payload)
+      }
+
+      ipcRenderer.on('gemini:session-change', wrappedListener)
+      return () => ipcRenderer.off('gemini:session-change', wrappedListener)
+    },
+    isHooksEnabled: () => ipcRenderer.invoke('gemini:is-hooks-enabled'),
+    enableHooks: () => ipcRenderer.invoke('gemini:enable-hooks'),
+    disableHooks: () => ipcRenderer.invoke('gemini:disable-hooks')
+  },
+  codex: {
+    onSessionChange: (listener) => {
+      const wrappedListener = (
+        _event: Electron.IpcRendererEvent,
+        payload: CodexSessionInfo[]
+      ) => {
+        listener(payload)
+      }
+
+      ipcRenderer.on('codex:session-change', wrappedListener)
+      return () => ipcRenderer.off('codex:session-change', wrappedListener)
+    },
+    isHooksEnabled: () => ipcRenderer.invoke('codex:is-hooks-enabled'),
+    enableHooks: () => ipcRenderer.invoke('codex:enable-hooks'),
+    disableHooks: () => ipcRenderer.invoke('codex:disable-hooks')
+  },
   cli: {
     isInstalled: () => ipcRenderer.invoke('cli:is-installed'),
     install: () => ipcRenderer.invoke('cli:install'),
     uninstall: () => ipcRenderer.invoke('cli:uninstall')
+  },
+  tools: {
+    checkAll: () => ipcRenderer.invoke('tools:check-all'),
+    install: (toolId) => ipcRenderer.invoke('tools:install', toolId)
   }
 }
 
