@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
 import type {
   ClaudeSessionInfo,
@@ -27,6 +27,9 @@ const api: ElectronApi = {
   clipboard: {
     writeText: (text) => ipcRenderer.invoke('clipboard:write-text', text)
   },
+  webUtils: {
+    getPathForFile: (file: File) => webUtils.getPathForFile(file)
+  },
   terminal: {
     createSession: (input) => ipcRenderer.invoke('terminal:create-session', input),
     attachSession: (input) => ipcRenderer.invoke('terminal:attach-session', input),
@@ -41,6 +44,7 @@ const api: ElectronApi = {
     persistTabs: (state: PersistedTabState) =>
       ipcRenderer.invoke('terminal:persist-tabs', state),
     setActiveSession: (sessionId) => ipcRenderer.invoke('terminal:set-active-session', sessionId),
+    writeToActiveSession: (data) => ipcRenderer.invoke('terminal:write-to-active-session', data),
     onData: (listener) => {
       const wrappedListener = (_event: Electron.IpcRendererEvent, payload: TerminalDataEvent) => {
         listener(payload)
@@ -72,6 +76,15 @@ const api: ElectronApi = {
 
       ipcRenderer.on('terminal:control-input', wrappedListener)
       return () => ipcRenderer.off('terminal:control-input', wrappedListener)
+    },
+    toggleMouse: () => ipcRenderer.invoke('terminal:toggle-mouse'),
+    getMouseMode: () => ipcRenderer.invoke('terminal:get-mouse-mode'),
+    onMouseModeChanged: (listener) => {
+      const wrappedListener = (_event: Electron.IpcRendererEvent, enabled: boolean) => {
+        listener(enabled)
+      }
+      ipcRenderer.on('terminal:mouse-mode-changed', wrappedListener)
+      return () => ipcRenderer.off('terminal:mouse-mode-changed', wrappedListener)
     }
   },
   claude: {

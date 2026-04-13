@@ -61,21 +61,25 @@ interface WorktreeTerminalProps {
   initialCommand?: string
   /** When set, reattach to this existing tmux session instead of creating a new one. */
   tmuxSessionName?: string | null
+  /** Whether tmux mouse mode is enabled (for forceSelection handling). */
+  mouseMode?: boolean
   onNewTab?: () => void
   onCloseTab?: () => void
   onSessionCreated?: (sessionId: string, pid: number, tmuxSessionName: string) => void
 }
 
-export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName, onNewTab, onCloseTab, onSessionCreated }: WorktreeTerminalProps) {
+export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName, mouseMode, onNewTab, onCloseTab, onSessionCreated }: WorktreeTerminalProps) {
   const containerRef = useRef<HTMLDivElement | null>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const fitAddonRef = useRef<FitAddon | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const activeRef = useRef(active)
+  const mouseModeRef = useRef(mouseMode ?? false)
   const onNewTabRef = useRef(onNewTab)
   const onCloseTabRef = useRef(onCloseTab)
   const onSessionCreatedRef = useRef(onSessionCreated)
   activeRef.current = active
+  mouseModeRef.current = mouseMode ?? false
   onNewTabRef.current = onNewTab
   onCloseTabRef.current = onCloseTab
   onSessionCreatedRef.current = onSessionCreated
@@ -90,8 +94,10 @@ export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName,
     const electree = getElectronBridge()
 
     const terminal = new Terminal({
+      altClickMovesCursor: false,
       convertEol: true,
       cursorBlink: true,
+      macOptionClickForcesSelection: true,
       macOptionIsMeta: true,
       fontFamily:
         '"SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
@@ -150,6 +156,7 @@ export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName,
         key === 'w' ||
         key === 'k' ||
         key === 'b' ||
+        key === 'm' ||
         (event.shiftKey && key === 'c') ||
         (key >= '1' && key <= '9')
       ) {
@@ -161,6 +168,37 @@ export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName,
 
     terminal.loadAddon(fitAddon)
     terminal.open(containerRef.current)
+
+    // Force selection mode for left-click even when mouse tracking is active.
+    // tmux `mouse on` enables mouse tracking (needed for scroll support), but
+    // this prevents normal text selection in xterm.js and causes garbled input
+    // when mouse escape sequences reach the shell. We intercept left-click
+    // mousedown events and re-dispatch them with shiftKey=true so xterm.js
+    // enters selection mode instead of forwarding mouse events to the app.
+    // Wheel events are unaffected, so tmux scroll still works.
+    const screen = terminal.element?.querySelector('.xterm-screen')
+    let forcingSelection = false
+    const forceSelectionOnMouseDown = (e: Event) => {
+      // Only intercept when tmux mouse is ON — otherwise xterm.js handles selection natively.
+      if (!mouseModeRef.current) return
+      const me = e as MouseEvent
+      if (forcingSelection || me.button !== 0 || me.shiftKey) return
+
+      me.stopImmediatePropagation()
+      forcingSelection = true
+      const selectionEvent = new MouseEvent('mousedown', {
+        bubbles: true,
+        cancelable: true,
+        clientX: me.clientX,
+        clientY: me.clientY,
+        button: me.button,
+        buttons: me.buttons,
+        shiftKey: true
+      })
+      ;(me.target as Element).dispatchEvent(selectionEvent)
+      forcingSelection = false
+    }
+    screen?.addEventListener('mousedown', forceSelectionOnMouseDown, { capture: true })
 
     const handleCopy = (event: ClipboardEvent) => {
       if (!activeRef.current || !terminal.hasSelection()) {
@@ -181,6 +219,24 @@ export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName,
       copySelectionToClipboard(event)
     }
 
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault()
+    }
+
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault()
+      if (!sessionId || !e.dataTransfer?.files.length) return
+      const paths = Array.from(e.dataTransfer.files)
+        .map((f) => electree.webUtils.getPathForFile(f))
+        .filter(Boolean)
+      if (paths.length) {
+        void electree.terminal.write(sessionId, paths.join(' '))
+      }
+    }
+
+    const container = containerRef.current
+    container.addEventListener('dragover', handleDragOver)
+    container.addEventListener('drop', handleDrop)
     window.addEventListener('copy', handleCopy)
 
     requestAnimationFrame(() => {
@@ -284,6 +340,9 @@ export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName,
       offControlInput()
       terminalInputDisposable.dispose()
       window.removeEventListener('copy', handleCopy)
+      container.removeEventListener('dragover', handleDragOver)
+      container.removeEventListener('drop', handleDrop)
+      screen?.removeEventListener('mousedown', forceSelectionOnMouseDown, { capture: true })
 
       if (sessionId) {
         void electree.terminal.detach(sessionId)

@@ -118,6 +118,9 @@ export interface ElectronApi {
   clipboard: {
     writeText: (text: string) => Promise<void>
   }
+  webUtils: {
+    getPathForFile: (file: File) => string
+  }
   terminal: {
     createSession: (input: CreateTerminalSessionInput) => Promise<CreateTerminalSessionResult>
     attachSession: (input: AttachTerminalSessionInput) => Promise<AttachTerminalSessionResult>
@@ -129,10 +132,14 @@ export interface ElectronApi {
     getPersistedTabs: () => Promise<PersistedTabState>
     persistTabs: (state: PersistedTabState) => Promise<void>
     setActiveSession: (sessionId: string | null) => Promise<void>
+    writeToActiveSession: (data: string) => Promise<void>
     onData: (listener: (event: TerminalDataEvent) => void) => () => void
     onExit: (listener: (event: TerminalExitEvent) => void) => () => void
     onProcessChange: (listener: (event: TerminalProcessEvent) => void) => () => void
     onControlInput: (listener: (data: string) => void) => () => void
+    toggleMouse: () => Promise<boolean>
+    getMouseMode: () => Promise<boolean>
+    onMouseModeChanged: (listener: (enabled: boolean) => void) => () => void
   }
   claude: {
     onSessionChange: (listener: (sessions: ClaudeSessionInfo[]) => void) => () => void

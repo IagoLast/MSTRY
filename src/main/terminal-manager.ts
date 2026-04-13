@@ -30,10 +30,9 @@ writeFileSync(
     // Without this, Ctrl+B activates tmux command mode and swallows the next key.
     'set-option -g prefix None',
     'unbind-key C-b',
-    // Enable mouse support so tmux handles wheel scrolling natively.
-    // Without this, xterm.js translates wheel events to arrow keys while
-    // tmux holds the alternate screen buffer.
-    'set-option -g mouse on',
+    // Mouse is OFF by default — xterm.js handles scrollback natively.
+    // Toggle with Cmd+M when apps like vim/claude need mouse scroll.
+    'set-option -g mouse off',
     ''
   ].join('\n')
 )
@@ -68,10 +67,16 @@ interface TerminalManagerEvents {
   processChange: [TerminalProcessEvent]
 }
 
+interface TmuxSessionInfo {
+  name: string
+  attached: boolean
+}
+
 export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
   private sessions = new Map<string, TerminalSession>()
   private activeSessionId: string | null = null
   private pollInterval: ReturnType<typeof setInterval> | null = null
+  private mouseEnabled = false
 
   setActiveSession(sessionId: string | null) {
     this.activeSessionId = sessionId
@@ -146,13 +151,51 @@ export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
 
   /** List tmux sessions alive on the electree socket. */
   listTmuxSessions(): string[] {
+    return this.listTmuxSessionInfo().map((session) => session.name)
+  }
+
+  /**
+   * Drop detached tmux sessions that do not belong to the current runtime or
+   * to the set of tabs restored from disk.
+   */
+  pruneOrphanedSessions(keepSessionNames: string[]) {
+    const keep = new Set(keepSessionNames)
+    for (const session of this.sessions.values()) {
+      keep.add(session.tmuxSessionName)
+    }
+
+    for (const session of this.listTmuxSessionInfo()) {
+      if (session.attached || keep.has(session.name)) {
+        continue
+      }
+
+      this.destroyTmuxSession(session.name)
+    }
+  }
+
+  /** List tmux sessions alive on the electree socket with attachment state. */
+  private listTmuxSessionInfo(): TmuxSessionInfo[] {
     try {
       const output = execFileSync(
         'tmux',
-        [...TMUX_BASE_ARGS, 'list-sessions', '-F', '#{session_name}'],
-        { encoding: 'utf8' }
+        [...TMUX_BASE_ARGS, 'list-sessions', '-F', '#{session_name}\t#{session_attached}'],
+        {
+          encoding: 'utf8',
+          env: getTmuxEnv()
+        }
       )
-      return output.trim().split('\n').filter(Boolean)
+
+      return output
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [name, attached] = line.split('\t')
+          return {
+            name,
+            attached: attached === '1'
+          }
+        })
     } catch {
       return []
     }
@@ -196,6 +239,24 @@ export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
     this.sessions.get(sessionId)?.process.write(data)
   }
 
+  /** Toggle tmux mouse mode globally. Returns the new state. */
+  toggleMouse(): boolean {
+    this.mouseEnabled = !this.mouseEnabled
+    const value = this.mouseEnabled ? 'on' : 'off'
+    try {
+      execFileSync('tmux', [...TMUX_BASE_ARGS, 'set-option', '-g', 'mouse', value], {
+        env: getTmuxEnv()
+      })
+    } catch {
+      // tmux server may not be running yet
+    }
+    return this.mouseEnabled
+  }
+
+  isMouseEnabled(): boolean {
+    return this.mouseEnabled
+  }
+
   resize(sessionId: string, cols: number, rows: number) {
     this.sessions.get(sessionId)?.process.resize(cols, rows)
   }
@@ -212,7 +273,9 @@ export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
   /** Kill a tmux session entirely (user intentionally closed the tab). */
   destroyTmuxSession(tmuxSessionName: string) {
     try {
-      execFileSync('tmux', [...TMUX_BASE_ARGS, 'kill-session', '-t', tmuxSessionName])
+      execFileSync('tmux', [...TMUX_BASE_ARGS, 'kill-session', '-t', tmuxSessionName], {
+        env: getTmuxEnv()
+      })
     } catch {
       // Session may already be dead — that's fine.
     }
@@ -235,7 +298,7 @@ export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
       execFileSync('tmux', [...TMUX_BASE_ARGS, 'set-option', '-g', 'status', 'off'], {
         env: getTmuxEnv()
       })
-      execFileSync('tmux', [...TMUX_BASE_ARGS, 'set-option', '-g', 'mouse', 'on'], {
+      execFileSync('tmux', [...TMUX_BASE_ARGS, 'set-option', '-g', 'mouse', this.mouseEnabled ? 'on' : 'off'], {
         env: getTmuxEnv()
       })
     } catch {

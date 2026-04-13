@@ -151,6 +151,17 @@ const registerIpc = () => {
   ipcMain.handle('terminal:set-active-session', (_event, sessionId: string | null) =>
     terminalManager.setActiveSession(sessionId)
   )
+  ipcMain.handle('terminal:write-to-active-session', (_event, data: string) =>
+    terminalManager.writeToActiveSession(data)
+  )
+  ipcMain.handle('terminal:toggle-mouse', () => {
+    const enabled = terminalManager.toggleMouse()
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('terminal:mouse-mode-changed', enabled)
+    }
+    return enabled
+  })
+  ipcMain.handle('terminal:get-mouse-mode', () => terminalManager.isMouseEnabled())
 
   ipcMain.handle('claude:is-hooks-enabled', () => isClaudeHooksEnabled())
   ipcMain.handle('claude:enable-hooks', () => enableClaudeHooks())
@@ -244,8 +255,24 @@ app.whenReady().then(async () => {
       ]
     },
     {
+      label: 'View',
+      submenu: [
+        {
+          label: 'Toggle Developer Tools',
+          accelerator: 'CmdOrCtrl+Alt+I',
+          click: () => mainWindow?.webContents.toggleDevTools()
+        }
+      ]
+    },
+    {
       label: 'Window',
       submenu: [
+        {
+          label: 'New Window',
+          accelerator: 'CmdOrCtrl+N',
+          click: () => createWindow()
+        },
+        { type: 'separator' },
         { role: 'minimize' },
         { role: 'zoom' },
         { type: 'separator' },
@@ -282,6 +309,14 @@ app.whenReady().then(async () => {
   })
 
   claudeStatus.start()
+
+  try {
+    const persistedTabs = await loadTabState()
+    terminalManager.pruneOrphanedSessions(persistedTabs.tabs.map((tab) => tab.tmuxSessionName))
+  } catch (error) {
+    console.warn('[terminal] failed to prune orphaned tmux sessions', error)
+  }
+
   await createWindow()
 
   // Prevent Chromium from swallowing Ctrl+<letter> combos (Ctrl+R, Ctrl+C, etc.)

@@ -162,6 +162,7 @@ export function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sidebarWidth, setSidebarWidth] = useState(340)
+  const [mouseMode, setMouseMode] = useState(false)
   const isResizing = useRef(false)
 
   const dndSensors = useSensors(
@@ -427,6 +428,13 @@ export function App() {
     return off
   }, [])
 
+  useEffect(() => {
+    const electree = getElectronBridge()
+    void electree.terminal.getMouseMode().then(setMouseMode)
+    const off = electree.terminal.onMouseModeChanged(setMouseMode)
+    return off
+  }, [])
+
   // Restore persisted tabs on startup.
   useEffect(() => {
     if (tabsRestoredRef.current) return
@@ -486,6 +494,10 @@ export function App() {
   )
 
   const currentActiveTabId = selectedWorkspacePath ? activeTabId[selectedWorkspacePath] ?? null : null
+
+  const handleToggleMouse = useCallback(() => {
+    void getElectronBridge().terminal.toggleMouse()
+  }, [])
 
   const handleNewTab = useCallback(() => {
     if (!selectedWorkspacePath) return
@@ -698,9 +710,15 @@ export function App() {
         label: 'Open Folder',
         icon: <VscFolderOpened className="size-4" />,
         onSelect: () => void pickProjectMutation.mutateAsync()
+      },
+      {
+        id: 'toggle-mouse',
+        label: mouseMode ? 'Disable tmux mouse mode' : 'Enable tmux mouse mode',
+        shortcut: '⌘M',
+        onSelect: () => handleToggleMouse()
       }
     ],
-    [handleNewTab, handleNewClaudeTab, handleCloseTab, currentActiveTabId, handleRefresh, pickProjectMutation, sidebarOpen, toggleSidebar]
+    [handleNewTab, handleNewClaudeTab, handleCloseTab, currentActiveTabId, handleRefresh, pickProjectMutation, sidebarOpen, toggleSidebar, mouseMode, handleToggleMouse]
   )
 
   useHotkeys(
@@ -735,7 +753,8 @@ export function App() {
       { hotkey: 'Mod+6', callback: () => handleSwitchTab(5) },
       { hotkey: 'Mod+7', callback: () => handleSwitchTab(6) },
       { hotkey: 'Mod+8', callback: () => handleSwitchTab(7) },
-      { hotkey: 'Mod+9', callback: () => handleSwitchTab(8) }
+      { hotkey: 'Mod+9', callback: () => handleSwitchTab(8) },
+      { hotkey: 'Mod+M', callback: () => handleToggleMouse() }
     ],
     { preventDefault: true }
   )
@@ -1144,7 +1163,13 @@ export function App() {
                 {tabs.map((tab) => {
                   const workspace = workspacesQuery.data?.find((w) => w.path === tab.workspacePath)
                   const workspaceLabel = workspace?.branch ?? workspace?.name ?? tab.workspacePath.split('/').pop() ?? 'workspace'
-                  const projectLabel = activeProject?.name ?? ''
+                  const projects = appConfigQuery.data?.projects ?? []
+                  const ownerProject = projects.find((project) => {
+                    if (tab.workspacePath === project.rootPath) return true
+                    if (project.worktreeRoot && tab.workspacePath.startsWith(project.worktreeRoot)) return true
+                    return false
+                  })
+                  const projectLabel = ownerProject?.name ?? ''
                   const headerLabel = projectLabel ? `${projectLabel} / ${workspaceLabel}` : workspaceLabel
                   const claudeInfo = tab.pid
                     ? claudeSessions.find((s) => s.shellPid === tab.pid) ?? null
@@ -1351,6 +1376,17 @@ export function App() {
                   <VscAdd className="size-3.5" />
                 </Button>
               ) : null}
+
+              {mouseMode ? (
+                <button
+                  type="button"
+                  onClick={handleToggleMouse}
+                  className="no-drag ml-auto shrink-0 rounded px-1.5 py-0.5 font-mono text-[10px] font-medium bg-yellow-600/20 text-yellow-500 hover:bg-yellow-600/30"
+                  title="Tmux mouse mode ON (⌘M to toggle)"
+                >
+                  MOUSE
+                </button>
+              ) : null}
             </div>
 
           </div>
@@ -1371,6 +1407,7 @@ export function App() {
                       cwd={tab.workspacePath}
                       initialCommand={tab.initialCommand}
                       tmuxSessionName={tab.tmuxSessionName}
+                      mouseMode={mouseMode}
                       onNewTab={handleNewTab}
                       onCloseTab={() => handleCloseTab(tab.id)}
                       onSessionCreated={(sessionId, pid, tmux) =>
