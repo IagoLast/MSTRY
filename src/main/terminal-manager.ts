@@ -26,12 +26,32 @@ writeFileSync(
     'set-option -g status-style "bg=default,fg=default"',
     'set-option -g status-left ""',
     'set-option -g status-right ""',
+    // Disable the tmux prefix key so it doesn't intercept terminal input.
+    // Without this, Ctrl+B activates tmux command mode and swallows the next key.
+    'set-option -g prefix None',
+    'unbind-key C-b',
+    // Enable mouse support so tmux handles wheel scrolling natively.
+    // Without this, xterm.js translates wheel events to arrow keys while
+    // tmux holds the alternate screen buffer.
+    'set-option -g mouse on',
     ''
   ].join('\n')
 )
 
-/** Common tmux args: use our socket and our minimal config. */
-const TMUX_BASE_ARGS = ['-L', TMUX_SOCKET, '-f', TMUX_CONF]
+/** Common tmux args: force UTF-8 (-u), use our socket and our minimal config. */
+const TMUX_BASE_ARGS = ['-u', '-L', TMUX_SOCKET, '-f', TMUX_CONF]
+
+/**
+ * Env with UTF-8 locale guaranteed — Electron launched from Finder often lacks LANG.
+ * Computed lazily so it picks up PATH fixes applied after module load (fixPath()
+ * runs in app.whenReady, but this module is imported earlier).
+ */
+const getTmuxEnv = (): NodeJS.ProcessEnv => ({
+  ...process.env,
+  LANG: process.env.LANG ?? 'en_US.UTF-8',
+  LC_ALL: process.env.LC_ALL ?? 'en_US.UTF-8',
+  LC_CTYPE: process.env.LC_CTYPE ?? 'en_US.UTF-8'
+})
 
 interface TerminalSession {
   id: string
@@ -69,19 +89,23 @@ export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
     const tmuxSessionName = `electree_${id.slice(0, 8)}`
 
     // Create a detached tmux session in the requested cwd.
-    execFileSync('tmux', [
-      ...TMUX_BASE_ARGS,
-      'new-session',
-      '-d',
-      '-s',
-      tmuxSessionName,
-      '-c',
-      input.cwd,
-      '-x',
-      String(input.cols),
-      '-y',
-      String(input.rows)
-    ])
+    execFileSync(
+      'tmux',
+      [
+        ...TMUX_BASE_ARGS,
+        'new-session',
+        '-d',
+        '-s',
+        tmuxSessionName,
+        '-c',
+        input.cwd,
+        '-x',
+        String(input.cols),
+        '-y',
+        String(input.rows)
+      ],
+      { env: getTmuxEnv() }
+    )
 
     const ptyProcess = this.spawnAttach(tmuxSessionName, input.cols, input.rows)
 
@@ -208,7 +232,12 @@ export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
     // Always force status bar off — the -f config is only read on first server
     // start, so an already-running server would ignore it.
     try {
-      execFileSync('tmux', [...TMUX_BASE_ARGS, 'set-option', '-g', 'status', 'off'])
+      execFileSync('tmux', [...TMUX_BASE_ARGS, 'set-option', '-g', 'status', 'off'], {
+        env: getTmuxEnv()
+      })
+      execFileSync('tmux', [...TMUX_BASE_ARGS, 'set-option', '-g', 'mouse', 'on'], {
+        env: getTmuxEnv()
+      })
     } catch {
       // Server may not be up yet — new-session will start it with the config.
     }
@@ -217,10 +246,11 @@ export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
       cols,
       rows,
       env: {
-        ...process.env,
+        ...getTmuxEnv(),
         TERM: 'xterm-256color'
       },
-      name: 'xterm-256color'
+      name: 'xterm-256color',
+      encoding: 'utf8'
     })
   }
 

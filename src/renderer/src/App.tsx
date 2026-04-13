@@ -2,6 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useHotkeys } from '@tanstack/react-hotkeys'
 import {
+  DndContext,
+  PointerSensor,
+  KeyboardSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+  type DragEndEvent
+} from '@dnd-kit/core'
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy
+} from '@dnd-kit/sortable'
+import { CSS } from '@dnd-kit/utilities'
+import {
   VscAdd,
   VscCheck,
   VscChevronDown,
@@ -9,15 +26,18 @@ import {
   VscClose,
   VscFolder,
   VscFolderOpened,
+  VscLayoutSidebarLeft,
+  VscLayoutSidebarLeftOff,
   VscRefresh,
   VscRepo,
   VscSettingsGear,
+  VscSortPrecedence,
   VscSourceControl,
   VscTerminalBash,
   VscTrash
 } from 'react-icons/vsc'
 
-import type { ClaudeSessionInfo, PersistedTab, Project, WorkspaceItem } from '../../shared/contracts'
+import type { AppConfig, ClaudeSessionInfo, PersistedTab, Project, WorkspaceItem } from '../../shared/contracts'
 import { CommandPalette, type CommandItem } from './components/command-palette'
 import { SettingsPanel } from './components/settings-panel'
 import { WorktreeTerminal } from './components/worktree-terminal'
@@ -109,6 +129,26 @@ const getWorkspaceMeta = (item: WorkspaceItem) => {
   return item.branch ?? 'worktree'
 }
 
+function SortableAgentItem({
+  id,
+  children
+}: {
+  id: string
+  children: (args: { listeners: ReturnType<typeof useSortable>['listeners']; isDragging: boolean }) => React.ReactNode
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id })
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1
+  }
+  return (
+    <div ref={setNodeRef} style={style} {...attributes}>
+      {children({ listeners, isDragging })}
+    </div>
+  )
+}
+
 export function App() {
   const queryClient = useQueryClient()
   const { selectedWorkspacePath, setSelectedWorkspacePath } = useSelectedWorkspace()
@@ -116,11 +156,31 @@ export function App() {
   const [activeTabId, setActiveTabId] = useState<Record<string, string>>({})
   const [projectsCollapsed, setProjectsCollapsed] = useState(false)
   const [worktreesCollapsed, setWorktreesCollapsed] = useState(false)
+  const [agentsCollapsed, setAgentsCollapsed] = useState(false)
   const [draftWorktreeName, setDraftWorktreeName] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
   const [sidebarWidth, setSidebarWidth] = useState(340)
   const isResizing = useRef(false)
+
+  const dndSensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 4 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  )
+
+  const handleAgentDragEnd = useCallback((event: DragEndEvent) => {
+    const { active, over } = event
+    if (!over || active.id === over.id) return
+    setTabs((current) => {
+      const oldIndex = current.findIndex((t) => t.id === active.id)
+      const newIndex = current.findIndex((t) => t.id === over.id)
+      if (oldIndex === -1 || newIndex === -1) return current
+      return arrayMove(current, oldIndex, newIndex)
+    })
+  }, [])
+
+  const [worktreeOrder, setWorktreeOrder] = useState<string[]>([])
 
   const appConfigQuery = useQuery({
     queryKey: ['app-config'],
@@ -134,6 +194,7 @@ export function App() {
       ) ?? null,
     [appConfigQuery.data]
   )
+  const defaultTabCommand = appConfigQuery.data?.defaultTabCommand || undefined
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces', activeProject?.rootPath],
@@ -159,6 +220,38 @@ export function App() {
       queryClient.setQueryData(['app-config'], config)
       setDraftWorktreeName(null)
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+    }
+  })
+
+  const reorderProjectsMutation = useMutation({
+    mutationFn: (orderedPaths: string[]) =>
+      getElectronBridge().workspace.reorderProjects(orderedPaths),
+    onMutate: async (orderedPaths) => {
+      await queryClient.cancelQueries({ queryKey: ['app-config'] })
+      const previous = queryClient.getQueryData<AppConfig>(['app-config'])
+      if (previous) {
+        const byPath = new Map(previous.projects.map((project) => [project.rootPath, project]))
+        const reordered: Project[] = []
+        const seen = new Set<string>()
+        for (const candidate of orderedPaths) {
+          const project = byPath.get(candidate)
+          if (project && !seen.has(candidate)) {
+            reordered.push(project)
+            seen.add(candidate)
+          }
+        }
+        for (const project of previous.projects) {
+          if (!seen.has(project.rootPath)) reordered.push(project)
+        }
+        queryClient.setQueryData<AppConfig>(['app-config'], { ...previous, projects: reordered })
+      }
+      return { previous }
+    },
+    onError: (_err, _vars, context) => {
+      if (context?.previous) queryClient.setQueryData(['app-config'], context.previous)
+    },
+    onSuccess: (config) => {
+      queryClient.setQueryData(['app-config'], config)
     }
   })
 
@@ -193,7 +286,7 @@ export function App() {
 
   const removeWorktreeMutation = useMutation({
     mutationFn: (workspacePath: string) => getElectronBridge().worktrees.remove({ path: workspacePath }),
-    onSuccess: (_value, workspacePath) => {
+    onSuccess: (result, workspacePath) => {
       if (selectedWorkspacePath === workspacePath) {
         setSelectedWorkspacePath(null)
       }
@@ -208,8 +301,83 @@ export function App() {
         return current.filter((tab) => tab.workspacePath !== workspacePath)
       })
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+
+      if (result.warning) {
+        window.alert(result.warning)
+      }
     }
   })
+
+  useEffect(() => {
+    if (!activeProject) {
+      setWorktreeOrder([])
+      return
+    }
+    try {
+      const saved = localStorage.getItem(`worktree-order:${activeProject.rootPath}`)
+      setWorktreeOrder(saved ? (JSON.parse(saved) as string[]) : [])
+    } catch {
+      setWorktreeOrder([])
+    }
+  }, [activeProject?.rootPath])
+
+  useEffect(() => {
+    if (!activeProject) return
+    try {
+      localStorage.setItem(
+        `worktree-order:${activeProject.rootPath}`,
+        JSON.stringify(worktreeOrder)
+      )
+    } catch {
+      /* ignore quota errors */
+    }
+  }, [activeProject?.rootPath, worktreeOrder])
+
+  const orderedWorkspaces = useMemo(() => {
+    const items = workspacesQuery.data ?? []
+    if (worktreeOrder.length === 0) return items
+    const byPath = new Map(items.map((item) => [item.path, item]))
+    const ordered: WorkspaceItem[] = []
+    const seen = new Set<string>()
+    for (const path of worktreeOrder) {
+      const item = byPath.get(path)
+      if (item && !seen.has(path)) {
+        ordered.push(item)
+        seen.add(path)
+      }
+    }
+    for (const item of items) {
+      if (!seen.has(item.path)) ordered.push(item)
+    }
+    return ordered
+  }, [workspacesQuery.data, worktreeOrder])
+
+  const handleProjectDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event
+      if (!over || active.id === over.id) return
+      const projects = appConfigQuery.data?.projects ?? []
+      const paths = projects.map((project) => project.rootPath)
+      const oldIndex = paths.indexOf(active.id as string)
+      const newIndex = paths.indexOf(over.id as string)
+      if (oldIndex === -1 || newIndex === -1) return
+      reorderProjectsMutation.mutate(arrayMove(paths, oldIndex, newIndex))
+    },
+    [appConfigQuery.data?.projects, reorderProjectsMutation]
+  )
+
+  const handleWorktreeDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event
+      if (!over || active.id === over.id) return
+      const paths = orderedWorkspaces.map((item) => item.path)
+      const oldIndex = paths.indexOf(active.id as string)
+      const newIndex = paths.indexOf(over.id as string)
+      if (oldIndex === -1 || newIndex === -1) return
+      setWorktreeOrder(arrayMove(paths, oldIndex, newIndex))
+    },
+    [orderedWorkspaces]
+  )
 
   useEffect(() => {
     const availableItems = workspacesQuery.data ?? []
@@ -232,11 +400,11 @@ export function App() {
 
     const hasTabsForWorkspace = tabs.some((tab) => tab.workspacePath === selectedWorkspacePath)
     if (!hasTabsForWorkspace) {
-      const tab = createTab(selectedWorkspacePath)
+      const tab = createTab(selectedWorkspacePath, defaultTabCommand)
       setTabs((current) => [...current, tab])
       setActiveTabId((current) => ({ ...current, [selectedWorkspacePath]: tab.id }))
     }
-  }, [selectedWorkspacePath, tabs])
+  }, [defaultTabCommand, selectedWorkspacePath, tabs])
 
   useEffect(() => {
     const electree = getElectronBridge()
@@ -321,10 +489,10 @@ export function App() {
 
   const handleNewTab = useCallback(() => {
     if (!selectedWorkspacePath) return
-    const tab = createTab(selectedWorkspacePath)
+    const tab = createTab(selectedWorkspacePath, defaultTabCommand)
     setTabs((current) => [...current, tab])
     setActiveTabId((current) => ({ ...current, [selectedWorkspacePath]: tab.id }))
-  }, [selectedWorkspacePath])
+  }, [defaultTabCommand, selectedWorkspacePath])
 
   const handleNewClaudeTab = useCallback(() => {
     if (!selectedWorkspacePath) return
@@ -332,6 +500,23 @@ export function App() {
     setTabs((current) => [...current, tab])
     setActiveTabId((current) => ({ ...current, [selectedWorkspacePath]: tab.id }))
   }, [selectedWorkspacePath])
+
+  const handleSelectTab = useCallback(
+    (tab: TerminalTab) => {
+      const projects = appConfigQuery.data?.projects ?? []
+      const ownerProject = projects.find((project) => {
+        if (tab.workspacePath === project.rootPath) return true
+        if (project.worktreeRoot && tab.workspacePath.startsWith(project.worktreeRoot)) return true
+        return false
+      })
+      if (ownerProject && ownerProject.rootPath !== activeProject?.rootPath) {
+        selectProjectMutation.mutate(ownerProject.rootPath)
+      }
+      setSelectedWorkspacePath(tab.workspacePath)
+      setActiveTabId((current) => ({ ...current, [tab.workspacePath]: tab.id }))
+    },
+    [appConfigQuery.data, activeProject, selectProjectMutation, setSelectedWorkspacePath]
+  )
 
   const handleSwitchTab = useCallback(
     (index: number) => {
@@ -343,6 +528,33 @@ export function App() {
       }
     },
     [selectedWorkspacePath, tabs]
+  )
+
+  const handleKillAgent = useCallback(
+    (tabId: string) => {
+      const target = tabs.find((tab) => tab.id === tabId)
+      if (!target) return
+
+      if (target.tmuxSessionName) {
+        void getElectronBridge().terminal.destroySession(target.tmuxSessionName)
+      }
+
+      setTabs((current) => current.filter((tab) => tab.id !== tabId))
+      setActiveTabId((current) => {
+        if (current[target.workspacePath] !== tabId) return current
+        const remaining = tabs.filter(
+          (tab) => tab.workspacePath === target.workspacePath && tab.id !== tabId
+        )
+        const next = { ...current }
+        if (remaining.length > 0) {
+          next[target.workspacePath] = remaining[0].id
+        } else {
+          delete next[target.workspacePath]
+        }
+        return next
+      })
+    },
+    [tabs]
   )
 
   const handleCloseTab = useCallback(
@@ -425,6 +637,10 @@ export function App() {
     queryClient.invalidateQueries({ queryKey: ['workspaces'] })
   }
 
+  const toggleSidebar = useCallback(() => {
+    setSidebarOpen((open) => !open)
+  }, [])
+
   const commands = useMemo<CommandItem[]>(
     () => [
       {
@@ -465,6 +681,13 @@ export function App() {
         onSelect: handleRefresh
       },
       {
+        id: 'toggle-sidebar',
+        label: sidebarOpen ? 'Hide Sidebar' : 'Show Sidebar',
+        shortcut: '⌘B',
+        icon: sidebarOpen ? <VscLayoutSidebarLeftOff className="size-4" /> : <VscLayoutSidebarLeft className="size-4" />,
+        onSelect: toggleSidebar
+      },
+      {
         id: 'new-worktree',
         label: 'New Worktree',
         icon: <VscSourceControl className="size-4" />,
@@ -477,7 +700,7 @@ export function App() {
         onSelect: () => void pickProjectMutation.mutateAsync()
       }
     ],
-    [handleNewTab, handleNewClaudeTab, handleCloseTab, currentActiveTabId, handleRefresh, pickProjectMutation]
+    [handleNewTab, handleNewClaudeTab, handleCloseTab, currentActiveTabId, handleRefresh, pickProjectMutation, sidebarOpen, toggleSidebar]
   )
 
   useHotkeys(
@@ -495,6 +718,10 @@ export function App() {
       {
         hotkey: 'Mod+K',
         callback: () => setCommandPaletteOpen((open) => !open)
+      },
+      {
+        hotkey: 'Mod+B',
+        callback: () => toggleSidebar()
       },
       {
         hotkey: 'Mod+Shift+C',
@@ -528,9 +755,14 @@ export function App() {
   }
 
   const handleDeleteWorktree = async (workspace: WorkspaceItem) => {
+    const targetName = workspace.branch ?? workspace.name
+    const branchWarning = workspace.branch
+      ? `Tambien se borrara la rama local ${workspace.branch}.`
+      : 'Se borrara la carpeta del worktree.'
+
     if (
       !window.confirm(
-        `Borrar ${workspace.branch ?? workspace.name}.\n\nGit bloqueara la operacion si hay cambios sin guardar en ese worktree.`
+        `Borrar ${targetName}.\n\n${branchWarning}\nSe perderan los cambios sin commit que haya dentro de ese worktree.`
       )
     ) {
       return
@@ -542,20 +774,13 @@ export function App() {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <div className="flex h-screen overflow-hidden">
-        <aside className="flex shrink-0 flex-col border-r bg-sidebar" style={{ width: sidebarWidth }}>
+        <aside
+          className={cn('flex shrink-0 flex-col overflow-hidden bg-sidebar', sidebarOpen ? 'border-r' : 'border-r-0')}
+          style={{ width: sidebarOpen ? sidebarWidth : 0 }}
+        >
           {/* Drag region for macOS traffic lights */}
           <div className="drag-region h-11 shrink-0 border-b pl-[78px]">
             <div className="no-drag flex h-full items-center gap-1 px-2">
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={() => void pickProjectMutation.mutateAsync()}
-                aria-label="Open folder"
-                title="Open folder"
-              >
-                <VscFolderOpened className="size-4" />
-              </Button>
-
               <Button
                 size="icon"
                 variant="ghost"
@@ -587,51 +812,90 @@ export function App() {
           ) : null}
 
           <div className="border-b">
-            <button
-              type="button"
-              onClick={() => setProjectsCollapsed((c) => !c)}
-              className="flex h-9 w-full items-center gap-2 px-4 text-[11px] uppercase tracking-[0.18em] text-muted hover:text-secondary"
-            >
-              {projectsCollapsed ? (
-                <VscChevronRight className="size-3.5" />
-              ) : (
-                <VscChevronDown className="size-3.5" />
-              )}
-              Projects
-            </button>
+            <div className="flex h-9 items-center">
+              <button
+                type="button"
+                onClick={() => setProjectsCollapsed((c) => !c)}
+                className="flex min-w-0 flex-1 items-center gap-2 px-4 text-[11px] uppercase tracking-[0.18em] text-muted hover:text-secondary"
+              >
+                {projectsCollapsed ? (
+                  <VscChevronRight className="size-3.5" />
+                ) : (
+                  <VscChevronDown className="size-3.5" />
+                )}
+                Projects
+              </button>
+
+              <Button
+                size="icon"
+                variant="ghost"
+                className="mr-0.5 size-7 rounded-md"
+                onClick={() => {
+                  const projects = appConfigQuery.data?.projects ?? []
+                  const sorted = [...projects].sort((a, b) => a.name.localeCompare(b.name))
+                  reorderProjectsMutation.mutate(sorted.map((p) => p.rootPath))
+                }}
+                aria-label="Sort alphabetically"
+                title="Sort alphabetically"
+              >
+                <VscSortPrecedence className="size-4" />
+              </Button>
+
+              <Button
+                size="icon"
+                variant="ghost"
+                className="mr-2 size-7 rounded-md"
+                onClick={() => void pickProjectMutation.mutateAsync()}
+                aria-label="Open folder"
+                title="Open folder"
+              >
+                <VscFolderOpened className="size-4" />
+              </Button>
+            </div>
 
             {!projectsCollapsed ? (
-              <ScrollArea className="max-h-[220px]">
+              <ScrollArea className="[&_[data-radix-scroll-area-viewport]]:max-h-[220px]">
                 <div className="px-2 pb-2">
+                  <DndContext
+                    sensors={dndSensors}
+                    collisionDetection={closestCenter}
+                    onDragEnd={handleProjectDragEnd}
+                  >
+                    <SortableContext
+                      items={(appConfigQuery.data?.projects ?? []).map((p) => p.rootPath)}
+                      strategy={verticalListSortingStrategy}
+                    >
                   {appConfigQuery.data?.projects.map((project) => {
                     const isActive = project.rootPath === activeProject?.rootPath
 
                     return (
+                      <SortableAgentItem key={project.rootPath} id={project.rootPath}>
+                        {({ listeners }) => (
                       <div
-                        key={project.rootPath}
                         className={cn(
-                          'group flex items-center gap-2 rounded-md px-2 py-1.5',
+                          'group flex items-center gap-2 rounded-md px-2 py-1',
                           isActive ? 'bg-item-active text-foreground' : 'text-secondary hover:bg-item-hover'
                         )}
                       >
                         <button
                           type="button"
                           onClick={() => void selectProjectMutation.mutateAsync(project.rootPath)}
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          {...listeners}
+                          className="flex min-w-0 flex-1 cursor-grab items-center gap-2 text-left active:cursor-grabbing"
                         >
-                          <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-overlay text-icon">
+                          <span className="flex size-4 shrink-0 items-center justify-center text-icon">
                             {project.mode === 'git' ? (
-                              <VscRepo className="size-4" />
+                              <VscRepo className="size-3.5" />
                             ) : (
-                              <VscFolder className="size-4" />
+                              <VscFolder className="size-3.5" />
                             )}
                           </span>
 
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-sm">{project.name}</span>
-                            <span className="block truncate text-[11px] uppercase tracking-[0.16em] text-muted">
+                          <span className="min-w-0 flex-1 leading-tight">
+                            <span className="block truncate text-[10px] uppercase tracking-[0.14em] text-muted">
                               {project.mode === 'git' ? 'repo' : 'folder'}
                             </span>
+                            <span className="block truncate text-xs">{project.name}</span>
                           </span>
                         </button>
 
@@ -639,12 +903,12 @@ export function App() {
                           <Button
                             size="icon"
                             variant="ghost"
-                            className="size-7 rounded-md opacity-0 group-hover:opacity-100"
+                            className="size-5 rounded opacity-0 group-hover:opacity-100"
                             onClick={() => setDraftWorktreeName((current) => current !== null ? null : generateRandomWorktreeName())}
                             aria-label="Create worktree"
                             title="Create worktree"
                           >
-                            <VscAdd className="size-4" />
+                            <VscAdd className="size-3.5" />
                           </Button>
                         ) : null}
 
@@ -652,17 +916,21 @@ export function App() {
                           <Button
                             size="icon"
                             variant="ghost"
-                            className="size-7 rounded-md opacity-0 group-hover:opacity-100"
+                            className="size-5 rounded opacity-0 group-hover:opacity-100"
                             onClick={() => void handleDeleteProject(project)}
                             aria-label={`Quitar ${project.name}`}
                             title="Quitar proyecto"
                           >
-                            <VscTrash className="size-4" />
+                            <VscTrash className="size-3.5" />
                           </Button>
                         ) : null}
                       </div>
+                        )}
+                      </SortableAgentItem>
                     )
                   })}
+                    </SortableContext>
+                  </DndContext>
                 </div>
               </ScrollArea>
             ) : null}
@@ -717,6 +985,20 @@ export function App() {
               {isGitProject ? 'Worktrees' : 'Workspace'}
             </button>
 
+            <Button
+              size="icon"
+              variant="ghost"
+              className="mr-0.5 size-7 rounded-md"
+              onClick={() => {
+                const sorted = [...orderedWorkspaces].sort((a, b) => a.name.localeCompare(b.name))
+                setWorktreeOrder(sorted.map((item) => item.path))
+              }}
+              aria-label="Sort alphabetically"
+              title="Sort alphabetically"
+            >
+              <VscSortPrecedence className="size-4" />
+            </Button>
+
             {isGitProject ? (
               <Button
                 size="icon"
@@ -732,46 +1014,57 @@ export function App() {
           </div>
 
           {!worktreesCollapsed ? (
-            <ScrollArea className="min-h-0 flex-1">
+            <ScrollArea className="shrink-0 border-b [&_[data-radix-scroll-area-viewport]]:max-h-[40vh]">
               <div className="px-2 py-2">
                 {workspacesQuery.isPending ? (
                   <div className="px-2 py-2 text-sm text-muted">Loading...</div>
                 ) : null}
 
-                {!workspacesQuery.isPending && (workspacesQuery.data?.length ?? 0) === 0 ? (
+                {!workspacesQuery.isPending && orderedWorkspaces.length === 0 ? (
                   <div className="px-2 py-2 text-sm text-muted">No items</div>
                 ) : null}
 
-                {workspacesQuery.data?.map((item) => {
+                <DndContext
+                  sensors={dndSensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleWorktreeDragEnd}
+                >
+                  <SortableContext
+                    items={orderedWorkspaces.map((item) => item.path)}
+                    strategy={verticalListSortingStrategy}
+                  >
+                {orderedWorkspaces.map((item) => {
                   const isSelected = selectedWorkspacePath === item.path
                   const canDelete = item.kind === 'worktree' && !item.isMain
 
                   return (
+                    <SortableAgentItem key={item.path} id={item.path}>
+                      {({ listeners }) => (
                     <div
-                      key={item.path}
                       className={cn(
-                        'group flex items-center gap-2 rounded-md px-2 py-1.5',
+                        'group flex items-center gap-2 rounded-md px-2 py-1',
                         isSelected ? 'bg-item-active text-foreground' : 'text-secondary hover:bg-item-hover'
                       )}
                     >
                       <button
                         type="button"
                         onClick={() => setSelectedWorkspacePath(item.path)}
-                        className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        {...listeners}
+                        className="flex min-w-0 flex-1 cursor-grab items-center gap-2 text-left active:cursor-grabbing"
                       >
-                        <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-overlay text-icon">
+                        <span className="flex size-4 shrink-0 items-center justify-center text-icon">
                           {item.kind === 'directory' ? (
-                            <VscFolder className="size-4" />
+                            <VscFolder className="size-3.5" />
                           ) : (
-                            <VscSourceControl className="size-4" />
+                            <VscSourceControl className="size-3.5" />
                           )}
                         </span>
 
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate text-sm">{item.name}</span>
-                          <span className="block truncate text-[11px] uppercase tracking-[0.16em] text-muted">
+                        <span className="min-w-0 flex-1 leading-tight">
+                          <span className="block truncate text-[10px] uppercase tracking-[0.14em] text-muted">
                             {getWorkspaceMeta(item)}
                           </span>
+                          <span className="block truncate text-xs">{item.name}</span>
                         </span>
                       </button>
 
@@ -779,33 +1072,194 @@ export function App() {
                         <Button
                           size="icon"
                           variant="ghost"
-                          className="size-7 rounded-md opacity-0 group-hover:opacity-100"
+                          className="size-5 rounded opacity-0 group-hover:opacity-100"
                           onClick={() => void handleDeleteWorktree(item)}
                           aria-label={`Borrar ${item.name}`}
                           title="Borrar worktree"
                         >
-                          <VscTrash className="size-4" />
+                          <VscTrash className="size-3.5" />
                         </Button>
                       ) : null}
                     </div>
+                      )}
+                    </SortableAgentItem>
                   )
                 })}
+                  </SortableContext>
+                </DndContext>
+              </div>
+            </ScrollArea>
+          ) : null}
+
+          <div className="flex h-9 shrink-0 items-center border-b">
+            <button
+              type="button"
+              onClick={() => setAgentsCollapsed((c) => !c)}
+              className="flex min-w-0 flex-1 items-center gap-2 px-4 text-[11px] uppercase tracking-[0.18em] text-muted hover:text-secondary"
+            >
+              {agentsCollapsed ? (
+                <VscChevronRight className="size-3.5" />
+              ) : (
+                <VscChevronDown className="size-3.5" />
+              )}
+              Agents
+              <span className="ml-1 font-mono text-[10px] normal-case tracking-normal text-muted">
+                {tabs.length}
+              </span>
+            </button>
+
+            <Button
+              size="icon"
+              variant="ghost"
+              className="mr-2 size-7 rounded-md"
+              onClick={() => {
+                setTabs((current) =>
+                  [...current].sort((a, b) => {
+                    const labelA = a.workspacePath.split('/').pop() ?? ''
+                    const labelB = b.workspacePath.split('/').pop() ?? ''
+                    return labelA.localeCompare(labelB)
+                  })
+                )
+              }}
+              aria-label="Sort alphabetically"
+              title="Sort alphabetically"
+            >
+              <VscSortPrecedence className="size-4" />
+            </Button>
+          </div>
+
+          {!agentsCollapsed ? (
+            <ScrollArea className="min-h-0 flex-1">
+              <div className="px-2 py-2">
+                {tabs.length === 0 ? (
+                  <div className="px-2 py-2 text-sm text-muted">Sin agentes activos</div>
+                ) : null}
+
+                <DndContext
+                  sensors={dndSensors}
+                  collisionDetection={closestCenter}
+                  onDragEnd={handleAgentDragEnd}
+                >
+                  <SortableContext items={tabs.map((t) => t.id)} strategy={verticalListSortingStrategy}>
+                {tabs.map((tab) => {
+                  const workspace = workspacesQuery.data?.find((w) => w.path === tab.workspacePath)
+                  const workspaceLabel = workspace?.branch ?? workspace?.name ?? tab.workspacePath.split('/').pop() ?? 'workspace'
+                  const projectLabel = activeProject?.name ?? ''
+                  const headerLabel = projectLabel ? `${projectLabel} / ${workspaceLabel}` : workspaceLabel
+                  const claudeInfo = tab.pid
+                    ? claudeSessions.find((s) => s.shellPid === tab.pid) ?? null
+                    : null
+                  const isClaude = claudeInfo !== null || isClaudeProcess(tab.processName)
+                  const isActive =
+                    selectedWorkspacePath === tab.workspacePath &&
+                    activeTabId[tab.workspacePath] === tab.id
+                  const label = isClaude
+                    ? (claudeInfo?.name ?? claudeInfo?.prompt ?? 'Claude')
+                    : 'Terminal'
+
+                  return (
+                    <SortableAgentItem key={tab.id} id={tab.id}>
+                      {({ listeners }) => (
+                    <button
+                      type="button"
+                      onClick={() => handleSelectTab(tab)}
+                      {...listeners}
+                      className={cn(
+                        'group flex w-full cursor-grab items-center gap-2 rounded-md px-2 py-1 text-left active:cursor-grabbing',
+                        isActive ? 'bg-item-active text-foreground' : 'text-secondary hover:bg-item-hover'
+                      )}
+                    >
+                      <span className="relative flex size-4 shrink-0 items-center justify-center text-icon">
+                        {isClaude ? (
+                          <span
+                            className={cn(
+                              'text-[10px] font-bold',
+                              claudeInfo?.status === 'working' && 'text-green-400',
+                              claudeInfo?.status === 'idle' && 'text-red-400'
+                            )}
+                          >
+                            C
+                          </span>
+                        ) : (
+                          <VscTerminalBash className="size-3.5" />
+                        )}
+                        {isClaude && claudeInfo ? (
+                          <span
+                            className={cn(
+                              'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-sidebar',
+                              claudeInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
+                            )}
+                            title={claudeInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                          />
+                        ) : null}
+                      </span>
+
+                      <span className="min-w-0 flex-1 leading-tight">
+                        <span className="block max-w-[220px] truncate text-[10px] uppercase tracking-[0.14em] text-muted">
+                          {headerLabel}
+                        </span>
+                        <span className="block max-w-[220px] truncate text-xs">{label}</span>
+                      </span>
+                      <span
+                        role="button"
+                        tabIndex={0}
+                        aria-label="Kill agent"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          handleKillAgent(tab.id)
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            e.stopPropagation()
+                            handleKillAgent(tab.id)
+                          }
+                        }}
+                        className="ml-1 flex size-5 shrink-0 items-center justify-center rounded text-icon opacity-0 hover:bg-item-hover hover:text-foreground group-hover:opacity-100"
+                      >
+                        <VscClose className="size-3.5" />
+                      </span>
+                    </button>
+                      )}
+                    </SortableAgentItem>
+                  )
+                })}
+                  </SortableContext>
+                </DndContext>
               </div>
             </ScrollArea>
           ) : null}
         </aside>
 
         {/* Resize handle */}
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          onMouseDown={handleSidebarResize}
-          className="w-1 shrink-0 cursor-col-resize hover:bg-focus-ring active:bg-focus-ring transition-colors"
-        />
+        {sidebarOpen ? (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            onMouseDown={handleSidebarResize}
+            className="w-1 shrink-0 cursor-col-resize transition-colors hover:bg-focus-ring active:bg-focus-ring"
+          />
+        ) : null}
 
         <main className="flex min-w-0 flex-1 flex-col bg-surface">
           <div className="drag-region flex h-11 shrink-0 items-center border-b">
-            <div className="flex min-w-0 flex-1 items-center gap-1 px-2">
+            <div className={cn('flex min-w-0 flex-1 items-center gap-1 pr-2', sidebarOpen ? 'pl-2' : 'pl-[78px]')}>
+              <Button
+                size="icon"
+                variant="ghost"
+                className="no-drag size-7 shrink-0 rounded-md"
+                onClick={toggleSidebar}
+                aria-label={sidebarOpen ? 'Hide sidebar' : 'Show sidebar'}
+                title={sidebarOpen ? 'Hide sidebar (⌘B)' : 'Show sidebar (⌘B)'}
+              >
+                {sidebarOpen ? (
+                  <VscLayoutSidebarLeftOff className="size-4" />
+                ) : (
+                  <VscLayoutSidebarLeft className="size-4" />
+                )}
+              </Button>
+
               {currentTabs.map((tab, index) => {
                 const isActive = tab.id === currentActiveTabId
                 const claudeInfo = tab.pid
@@ -833,33 +1287,35 @@ export function App() {
                         {index + 1}
                       </span>
                     ) : null}
-                    {isClaude ? (
-                      <span
-                        className={cn(
-                          'relative flex size-3.5 shrink-0 items-center justify-center text-[10px] font-bold',
-                          claudeInfo?.status === 'working' ? 'text-green-400' : 'text-red-400'
-                        )}
-                        title={claudeInfo?.status === 'working' ? 'Claude is working' : 'Waiting for input'}
-                      >
-                        C
-                      </span>
-                    ) : (
-                      <VscTerminalBash className="size-3.5 shrink-0" />
-                    )}
+                    <span className="relative flex size-3.5 shrink-0 items-center justify-center">
+                      {isClaude ? (
+                        <span
+                          className={cn(
+                            'text-[10px] font-bold',
+                            claudeInfo?.status === 'working' && 'text-green-400',
+                            claudeInfo?.status === 'idle' && 'text-red-400'
+                          )}
+                        >
+                          C
+                        </span>
+                      ) : (
+                        <VscTerminalBash className="size-3.5" />
+                      )}
+                      {isClaude && claudeInfo ? (
+                        <span
+                          className={cn(
+                            'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-surface',
+                            claudeInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
+                          )}
+                          title={claudeInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                        />
+                      ) : null}
+                    </span>
                     <span className="truncate">
                       {isClaude
                         ? (claudeInfo?.name ?? claudeInfo?.prompt ?? 'Claude')
                         : (selectedWorkspace?.branch ?? selectedWorkspace?.name ?? 'Terminal')}
                     </span>
-                    {isClaude && claudeInfo ? (
-                      <span
-                        className={cn(
-                          'size-1.5 shrink-0 rounded-full',
-                          claudeInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
-                        )}
-                        title={claudeInfo.status === 'working' ? 'Working...' : 'Needs input'}
-                      />
-                    ) : null}
                     {currentTabs.length > 1 ? (
                       <span
                         role="button"
@@ -897,17 +1353,6 @@ export function App() {
               ) : null}
             </div>
 
-            <div className="no-drag flex shrink-0 items-center gap-2 px-4">
-              <kbd className="rounded bg-overlay px-1.5 py-0.5 font-mono text-[10px] text-muted" title="Command palette">
-                ⌘K
-              </kbd>
-              <kbd className="rounded bg-overlay px-1.5 py-0.5 font-mono text-[10px] text-muted" title="New terminal">
-                ⌘T
-              </kbd>
-              <kbd className="rounded bg-overlay px-1.5 py-0.5 font-mono text-[10px] text-muted" title="Close terminal">
-                ⌘W
-              </kbd>
-            </div>
           </div>
 
           <div className="min-h-0 flex-1 p-2">
@@ -944,7 +1389,13 @@ export function App() {
         </main>
       </div>
 
-      {settingsOpen ? <SettingsPanel onClose={() => setSettingsOpen(false)} /> : null}
+      {settingsOpen ? (
+        <SettingsPanel
+          defaultTabCommand={appConfigQuery.data?.defaultTabCommand ?? ''}
+          onConfigUpdated={(config) => queryClient.setQueryData(['app-config'], config)}
+          onClose={() => setSettingsOpen(false)}
+        />
+      ) : null}
       {commandPaletteOpen ? (
         <CommandPalette commands={commands} onClose={() => setCommandPaletteOpen(false)} />
       ) : null}

@@ -15,12 +15,17 @@ const api: ElectronApi = {
     setPath: (workspacePath) => ipcRenderer.invoke('workspace:set-path', workspacePath),
     pickPath: () => ipcRenderer.invoke('workspace:pick-path'),
     selectProject: (projectPath) => ipcRenderer.invoke('workspace:select-project', projectPath),
-    removeProject: (projectPath) => ipcRenderer.invoke('workspace:remove-project', projectPath)
+    removeProject: (projectPath) => ipcRenderer.invoke('workspace:remove-project', projectPath),
+    reorderProjects: (orderedPaths) => ipcRenderer.invoke('workspace:reorder-projects', orderedPaths),
+    setDefaultTabCommand: (command) => ipcRenderer.invoke('workspace:set-default-tab-command', command)
   },
   worktrees: {
     list: () => ipcRenderer.invoke('worktrees:list'),
     create: (input) => ipcRenderer.invoke('worktrees:create', input),
     remove: (input) => ipcRenderer.invoke('worktrees:remove', input)
+  },
+  clipboard: {
+    writeText: (text) => ipcRenderer.invoke('clipboard:write-text', text)
   },
   terminal: {
     createSession: (input) => ipcRenderer.invoke('terminal:create-session', input),
@@ -84,6 +89,11 @@ const api: ElectronApi = {
     isHooksEnabled: () => ipcRenderer.invoke('claude:is-hooks-enabled'),
     enableHooks: () => ipcRenderer.invoke('claude:enable-hooks'),
     disableHooks: () => ipcRenderer.invoke('claude:disable-hooks')
+  },
+  cli: {
+    isInstalled: () => ipcRenderer.invoke('cli:is-installed'),
+    install: () => ipcRenderer.invoke('cli:install'),
+    uninstall: () => ipcRenderer.invoke('cli:uninstall')
   }
 }
 

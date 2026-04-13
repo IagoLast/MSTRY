@@ -12,6 +12,7 @@ export interface AppConfig {
   activeProjectPath: string | null
   projects: Project[]
   shell: string
+  defaultTabCommand: string
 }
 
 export interface WorkspaceItem {
@@ -33,6 +34,12 @@ export interface CreateWorktreeInput {
 
 export interface DeleteWorktreeInput {
   path: string
+}
+
+export interface DeleteWorktreeResult {
+  removedPath: string
+  removedBranch: string | null
+  warning: string | null
 }
 
 export interface CreateTerminalSessionInput {
@@ -100,11 +107,16 @@ export interface ElectronApi {
     pickPath: () => Promise<AppConfig | null>
     selectProject: (projectPath: string) => Promise<AppConfig>
     removeProject: (projectPath: string) => Promise<AppConfig>
+    reorderProjects: (orderedPaths: string[]) => Promise<AppConfig>
+    setDefaultTabCommand: (command: string) => Promise<AppConfig>
   }
   worktrees: {
     list: () => Promise<WorkspaceItem[]>
     create: (input: CreateWorktreeInput) => Promise<WorkspaceItem>
-    remove: (input: DeleteWorktreeInput) => Promise<void>
+    remove: (input: DeleteWorktreeInput) => Promise<DeleteWorktreeResult>
+  }
+  clipboard: {
+    writeText: (text: string) => Promise<void>
   }
   terminal: {
     createSession: (input: CreateTerminalSessionInput) => Promise<CreateTerminalSessionResult>
@@ -127,5 +139,10 @@ export interface ElectronApi {
     isHooksEnabled: () => Promise<boolean>
     enableHooks: () => Promise<void>
     disableHooks: () => Promise<void>
+  }
+  cli: {
+    isInstalled: () => Promise<boolean>
+    install: () => Promise<void>
+    uninstall: () => Promise<void>
   }
 }

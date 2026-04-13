@@ -1,21 +1,40 @@
 import { useEffect, useState } from 'react'
 
+import type { AppConfig } from '../../../shared/contracts'
+import { Button } from './ui/button'
+import { Input } from './ui/input'
 import { getElectronBridge } from '../lib/electron-bridge'
 import { cn } from '../lib/utils'
 
 interface SettingsPanelProps {
+  defaultTabCommand: string
+  onConfigUpdated: (config: AppConfig) => void
   onClose: () => void
 }
 
-export function SettingsPanel({ onClose }: SettingsPanelProps) {
+const getErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : 'No se pudo guardar la configuracion.'
+
+export function SettingsPanel({ defaultTabCommand: initialDefaultTabCommand, onConfigUpdated, onClose }: SettingsPanelProps) {
   const [hooksEnabled, setHooksEnabled] = useState<boolean | null>(null)
+  const [cliInstalled, setCliInstalled] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
+  const [cliBusy, setCliBusy] = useState(false)
+  const [defaultTabCommand, setDefaultTabCommand] = useState(initialDefaultTabCommand)
+  const [commandBusy, setCommandBusy] = useState(false)
+  const [commandError, setCommandError] = useState<string | null>(null)
+  const [commandSaved, setCommandSaved] = useState(false)
 
   useEffect(() => {
-    void getElectronBridge()
-      .claude.isHooksEnabled()
-      .then(setHooksEnabled)
+    const bridge = getElectronBridge()
+    void bridge.claude.isHooksEnabled().then(setHooksEnabled)
+    void bridge.cli.isInstalled().then(setCliInstalled)
   }, [])
+
+  useEffect(() => {
+    setDefaultTabCommand(initialDefaultTabCommand)
+    setCommandError(null)
+  }, [initialDefaultTabCommand])
 
   const toggle = async () => {
     setBusy(true)
@@ -30,6 +49,40 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
       }
     } finally {
       setBusy(false)
+    }
+  }
+
+  const normalizedDefaultTabCommand = defaultTabCommand.trim()
+  const isCommandDirty = normalizedDefaultTabCommand !== initialDefaultTabCommand
+  const bridge = getElectronBridge()
+  const canSaveDefaultTabCommand =
+    typeof bridge.workspace.setDefaultTabCommand === 'function'
+
+  const handleSaveDefaultCommand = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (!canSaveDefaultTabCommand) {
+      setCommandError('Reinicia Electree para cargar el nuevo bridge de settings y vuelve a intentarlo.')
+      return
+    }
+
+    if (!isCommandDirty) {
+      return
+    }
+
+    setCommandBusy(true)
+    setCommandError(null)
+    setCommandSaved(false)
+
+    try {
+      const updatedConfig = await bridge.workspace.setDefaultTabCommand(defaultTabCommand)
+      onConfigUpdated(updatedConfig)
+      setDefaultTabCommand(updatedConfig.defaultTabCommand)
+      setCommandSaved(true)
+    } catch (error) {
+      setCommandError(getErrorMessage(error))
+    } finally {
+      setCommandBusy(false)
     }
   }
 
@@ -100,6 +153,112 @@ export function SettingsPanel({ onClose }: SettingsPanelProps) {
               Desactivado. Las tabs solo mostraran el nombre del branch.
             </div>
           ) : null}
+
+          <div className="mt-5 border-t pt-5">
+            <div className="min-w-0">
+              <p className="text-sm font-medium">Comando por defecto en tabs nuevas</p>
+              <p className="mt-1 text-xs text-muted">
+                Se ejecuta automaticamente al crear una tab nueva. Dejalo vacio para abrir solo la shell.
+                Puedes usar algo como <code className="font-mono text-secondary">claude</code> o{' '}
+                <code className="font-mono text-secondary">claude --dangerously-skip-permissions</code>.
+              </p>
+            </div>
+
+            <form className="mt-3 flex items-center gap-2" onSubmit={(event) => void handleSaveDefaultCommand(event)}>
+              <Input
+                value={defaultTabCommand}
+                onChange={(event) => {
+                  setDefaultTabCommand(event.target.value)
+                  setCommandError(null)
+                  setCommandSaved(false)
+                }}
+                placeholder="claude"
+                className="h-9 rounded-lg font-mono text-sm"
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
+                disabled={commandBusy || !canSaveDefaultTabCommand}
+              />
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={commandBusy || !isCommandDirty || !canSaveDefaultTabCommand}
+              >
+                Guardar
+              </Button>
+            </form>
+
+            {commandError ? (
+              <div className="mt-3 rounded-lg bg-red-500/[0.06] px-3 py-2 text-xs text-error">
+                {commandError}
+              </div>
+            ) : !canSaveDefaultTabCommand ? (
+              <div className="mt-3 rounded-lg bg-red-500/[0.06] px-3 py-2 text-xs text-error">
+                Esta ventana sigue usando una version anterior del bridge. Reinicia Electree para activar esta opcion.
+              </div>
+            ) : commandSaved ? (
+              <div className="mt-3 rounded-lg bg-overlay px-3 py-2 text-xs text-secondary">
+                Guardado. Las tabs nuevas usaran este comando.
+              </div>
+            ) : (
+              <div className="mt-3 rounded-lg bg-overlay px-3 py-2 text-xs text-muted">
+                Valor actual: {initialDefaultTabCommand ? <code className="font-mono text-secondary">{initialDefaultTabCommand}</code> : 'shell limpia'}
+              </div>
+            )}
+          </div>
+
+          <div className="mt-5 border-t pt-5">
+            <div className="flex items-start gap-4">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">Comando en PATH</p>
+                <p className="mt-1 text-xs text-muted">
+                  Instala el comando <code className="font-mono text-secondary">electree</code> para abrir proyectos
+                  desde la terminal con <code className="font-mono text-secondary">electree .</code>
+                </p>
+              </div>
+
+              <button
+                type="button"
+                disabled={cliInstalled === null || cliBusy}
+                onClick={async () => {
+                  setCliBusy(true)
+                  const bridge = getElectronBridge()
+                  try {
+                    if (cliInstalled) {
+                      await bridge.cli.uninstall()
+                      setCliInstalled(false)
+                    } else {
+                      await bridge.cli.install()
+                      setCliInstalled(true)
+                    }
+                  } finally {
+                    setCliBusy(false)
+                  }
+                }}
+                className={cn(
+                  'relative mt-0.5 inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full transition-colors disabled:opacity-50',
+                  cliInstalled ? 'bg-purple-500' : 'bg-overlay-hover'
+                )}
+              >
+                <span
+                  className={cn(
+                    'inline-block size-3.5 rounded-full bg-white shadow transition-transform',
+                    cliInstalled ? 'translate-x-[18px]' : 'translate-x-[3px]'
+                  )}
+                />
+              </button>
+            </div>
+
+            {cliInstalled ? (
+              <div className="mt-3 rounded-lg bg-overlay px-3 py-2 text-xs text-secondary">
+                Instalado. Usa <code className="font-mono">electree .</code> o <code className="font-mono">electree /ruta/al/proyecto</code> desde tu terminal.
+              </div>
+            ) : cliInstalled === false ? (
+              <div className="mt-3 rounded-lg bg-overlay px-3 py-2 text-xs text-muted">
+                No instalado. Activa para usar Electree desde la terminal.
+              </div>
+            ) : null}
+          </div>
         </div>
       </div>
     </div>

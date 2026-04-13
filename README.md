@@ -27,6 +27,7 @@ You can have N projects, each with M worktrees, each with K terminal tabs — al
 | Shortcut | Action |
 |----------|--------|
 | `Cmd+T` / `Ctrl+T` | New terminal tab in current worktree |
+| `Cmd+B` / `Ctrl+B` | Toggle sidebar |
 | `Cmd+W` / `Ctrl+W` | Close current terminal tab |
 
 ## Tech stack
@@ -51,10 +52,10 @@ npm run dev
 3. Create new worktrees from the sidebar — Electree runs `git worktree add` with a new branch for you.
 4. Select a worktree to open a terminal session rooted in that worktree's directory.
 5. Open multiple terminal tabs per worktree (`Cmd+T`) to run agents in parallel.
-6. Delete worktrees when done — Electree cleans up with `git worktree remove` + `prune`.
+6. Delete worktrees when done — Electree removes the worktree folder, prunes Git metadata, and deletes the linked local branch.
 
 ## Notes
 
 - Workspace config is persisted in Electron's user data directory.
 - New worktrees are created under `.claude-worktrees/<repo>/<branch>`.
-- Worktree deletion uses `git worktree remove` (without `--force`) — git will block the operation if there are unsaved changes.
+- Worktree deletion uses `git worktree remove --force`, then `git worktree prune`, and finally deletes the linked local branch with `git branch -D`.

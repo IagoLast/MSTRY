@@ -8,11 +8,13 @@ import type { AppConfig, Project, WorkspaceMode } from '../shared/contracts'
 interface StoredConfig {
   activeProjectPath: string | null
   projectPaths: string[]
+  defaultTabCommand: string
 }
 
 const DEFAULT_CONFIG: StoredConfig = {
   activeProjectPath: null,
-  projectPaths: []
+  projectPaths: [],
+  defaultTabCommand: ''
 }
 
 const configDirectory = () => path.join(app.getPath('userData'))
@@ -43,6 +45,8 @@ const normalizeProjectPath = async (candidate: string | null) => {
   return (await isExistingDirectory(resolved)) ? resolved : null
 }
 
+const normalizeDefaultTabCommand = (command: string | null | undefined) => command?.trim() ?? ''
+
 const readStoredConfig = async (): Promise<StoredConfig> => {
   try {
     await access(configPath())
@@ -51,7 +55,8 @@ const readStoredConfig = async (): Promise<StoredConfig> => {
 
     return {
       activeProjectPath: parsed.activeProjectPath ?? null,
-      projectPaths: Array.isArray(parsed.projectPaths) ? parsed.projectPaths : []
+      projectPaths: Array.isArray(parsed.projectPaths) ? parsed.projectPaths : [],
+      defaultTabCommand: normalizeDefaultTabCommand(parsed.defaultTabCommand)
     }
   } catch {
     return { ...DEFAULT_CONFIG }
@@ -101,14 +106,16 @@ const buildAppConfig = async (stored: StoredConfig): Promise<AppConfig> => {
   return {
     activeProjectPath,
     projects,
-    shell: getShell()
+    shell: getShell(),
+    defaultTabCommand: normalizeDefaultTabCommand(stored.defaultTabCommand)
   }
 }
 
 const persistAppConfig = async (config: AppConfig) => {
   await writeStoredConfig({
     activeProjectPath: config.activeProjectPath,
-    projectPaths: config.projects.map((project) => project.rootPath)
+    projectPaths: config.projects.map((project) => project.rootPath),
+    defaultTabCommand: normalizeDefaultTabCommand(config.defaultTabCommand)
   })
 }
 
@@ -118,7 +125,8 @@ export const getAppConfig = async (): Promise<AppConfig> => {
 
   if (
     stored.activeProjectPath !== config.activeProjectPath ||
-    JSON.stringify(stored.projectPaths) !== JSON.stringify(config.projects.map((project) => project.rootPath))
+    JSON.stringify(stored.projectPaths) !== JSON.stringify(config.projects.map((project) => project.rootPath)) ||
+    normalizeDefaultTabCommand(stored.defaultTabCommand) !== config.defaultTabCommand
   ) {
     await persistAppConfig(config)
   }
@@ -136,7 +144,8 @@ export const addProjectPath = async (projectPath: string): Promise<AppConfig> =>
   const stored = await readStoredConfig()
   const config = await buildAppConfig({
     activeProjectPath: normalized,
-    projectPaths: [...stored.projectPaths, normalized]
+    projectPaths: [...stored.projectPaths, normalized],
+    defaultTabCommand: stored.defaultTabCommand
   })
 
   await persistAppConfig(config)
@@ -182,6 +191,46 @@ export const removeProjectPath = async (projectPath: string): Promise<AppConfig>
     ...config,
     activeProjectPath,
     projects: remainingProjects
+  }
+
+  await persistAppConfig(updated)
+  return updated
+}
+
+export const reorderProjectPaths = async (orderedPaths: string[]): Promise<AppConfig> => {
+  const config = await getAppConfig()
+  const currentByPath = new Map(config.projects.map((project) => [project.rootPath, project]))
+  const seen = new Set<string>()
+  const reordered: Project[] = []
+
+  for (const candidate of orderedPaths) {
+    const project = currentByPath.get(candidate)
+    if (project && !seen.has(candidate)) {
+      reordered.push(project)
+      seen.add(candidate)
+    }
+  }
+
+  for (const project of config.projects) {
+    if (!seen.has(project.rootPath)) {
+      reordered.push(project)
+    }
+  }
+
+  const updated: AppConfig = {
+    ...config,
+    projects: reordered
+  }
+
+  await persistAppConfig(updated)
+  return updated
+}
+
+export const setDefaultTabCommand = async (command: string): Promise<AppConfig> => {
+  const config = await getAppConfig()
+  const updated: AppConfig = {
+    ...config,
+    defaultTabCommand: normalizeDefaultTabCommand(command)
   }
 
   await persistAppConfig(updated)

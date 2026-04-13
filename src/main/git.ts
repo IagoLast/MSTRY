@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
-import type { CreateWorktreeInput, WorkspaceItem } from '../shared/contracts'
+import type { CreateWorktreeInput, DeleteWorktreeResult, WorkspaceItem } from '../shared/contracts'
 
 const execFileAsync = promisify(execFile)
 
@@ -163,7 +163,10 @@ export const createWorktree = async (
   return created
 }
 
-export const removeWorktree = async (repoPath: string | null, worktreePath: string) => {
+export const removeWorktree = async (
+  repoPath: string | null,
+  worktreePath: string
+): Promise<DeleteWorktreeResult> => {
   if (!repoPath) {
     throw new Error('No hay worktrees Git que borrar en modo carpeta.')
   }
@@ -175,6 +178,32 @@ export const removeWorktree = async (repoPath: string | null, worktreePath: stri
     throw new Error('No se puede borrar el workspace principal.')
   }
 
-  await runGit(repoPath, ['worktree', 'remove', normalizedWorktreePath])
+  const worktrees = await listWorkspaceItems(repoPath, repoPath)
+  const targetWorktree = worktrees.find(
+    (worktree) => path.resolve(worktree.path) === normalizedWorktreePath
+  )
+
+  if (!targetWorktree || targetWorktree.kind !== 'worktree') {
+    throw new Error('No encontre ese worktree en el repositorio activo.')
+  }
+
+  await runGit(repoPath, ['worktree', 'remove', '--force', normalizedWorktreePath])
   await runGit(repoPath, ['worktree', 'prune'])
+
+  let warning: string | null = null
+
+  if (targetWorktree.branch) {
+    try {
+      await runGit(repoPath, ['branch', '-D', targetWorktree.branch])
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'No pude borrar la rama local.'
+      warning = `El worktree se borro, pero no pude borrar la rama local ${targetWorktree.branch}: ${message}`
+    }
+  }
+
+  return {
+    removedPath: normalizedWorktreePath,
+    removedBranch: targetWorktree.branch,
+    warning
+  }
 }

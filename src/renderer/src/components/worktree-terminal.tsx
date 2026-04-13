@@ -92,6 +92,7 @@ export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName,
     const terminal = new Terminal({
       convertEol: true,
       cursorBlink: true,
+      macOptionIsMeta: true,
       fontFamily:
         '"SF Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
       fontSize: 13,
@@ -106,20 +107,51 @@ export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName,
     terminalRef.current = terminal
     fitAddonRef.current = fitAddon
 
+    const copySelectionToClipboard = (event?: ClipboardEvent) => {
+      const selection = terminal.getSelection()
+      if (!selection) {
+        return false
+      }
+
+      event?.preventDefault()
+      event?.clipboardData?.setData('text/plain', selection)
+      void electree.clipboard.writeText(selection)
+      return true
+    }
+
     terminal.attachCustomKeyEventHandler((event) => {
+      if (event.type !== 'keydown') {
+        return true
+      }
+
+      const key = event.key.toLowerCase()
+      const isMacCopyShortcut =
+        event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey && key === 'c'
+      const isShiftCopyShortcut =
+        event.ctrlKey && !event.metaKey && !event.altKey && event.shiftKey && key === 'c'
+
+      if (isMacCopyShortcut || isShiftCopyShortcut) {
+        if (copySelectionToClipboard()) {
+          event.preventDefault()
+          event.stopPropagation()
+        }
+        return false
+      }
+
       // Only intercept Cmd (metaKey) shortcuts for tab management.
       // Ctrl key combos (Ctrl+R, Ctrl+W, etc.) must pass through to the terminal.
-      if (!event.metaKey || event.type !== 'keydown') {
+      if (!event.metaKey) {
         return true
       }
 
       // Let these Cmd shortcuts bubble up to the app-level hotkey handler
       if (
-        event.key === 't' ||
-        event.key === 'w' ||
-        event.key === 'k' ||
-        (event.shiftKey && event.key === 'c') ||
-        (event.key >= '1' && event.key <= '9')
+        key === 't' ||
+        key === 'w' ||
+        key === 'k' ||
+        key === 'b' ||
+        (event.shiftKey && key === 'c') ||
+        (key >= '1' && key <= '9')
       ) {
         return false
       }
@@ -129,6 +161,27 @@ export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName,
 
     terminal.loadAddon(fitAddon)
     terminal.open(containerRef.current)
+
+    const handleCopy = (event: ClipboardEvent) => {
+      if (!activeRef.current || !terminal.hasSelection()) {
+        return
+      }
+
+      const activeElement = document.activeElement
+      const terminalOwnsFocus =
+        activeElement == null ||
+        activeElement === document.body ||
+        activeElement === document.documentElement ||
+        (activeElement instanceof Element && containerRef.current?.contains(activeElement))
+
+      if (!terminalOwnsFocus) {
+        return
+      }
+
+      copySelectionToClipboard(event)
+    }
+
+    window.addEventListener('copy', handleCopy)
 
     requestAnimationFrame(() => {
       fitAddon.fit()
@@ -230,6 +283,7 @@ export function WorktreeTerminal({ active, cwd, initialCommand, tmuxSessionName,
       offExit()
       offControlInput()
       terminalInputDisposable.dispose()
+      window.removeEventListener('copy', handleCopy)
 
       if (sessionId) {
         void electree.terminal.detach(sessionId)

@@ -1,6 +1,7 @@
 import {
   app,
   BrowserWindow,
+  clipboard,
   dialog,
   ipcMain,
   Menu,
@@ -10,8 +11,16 @@ import {
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 
+import { installCli, isCliInstalled, uninstallCli } from './cli-install'
 import { disableClaudeHooks, enableClaudeHooks, isClaudeHooksEnabled } from './claude-hooks-config'
-import { addProjectPath, getAppConfig, removeProjectPath, selectProjectPath } from './config'
+import {
+  addProjectPath,
+  getAppConfig,
+  removeProjectPath,
+  reorderProjectPaths,
+  selectProjectPath,
+  setDefaultTabCommand
+} from './config'
 import { ClaudeStatusWatcher } from './claude-status'
 import { createWorktree, listWorkspaceItems, removeWorktree } from './git'
 import { loadTabState, saveTabState } from './tab-store'
@@ -76,6 +85,8 @@ const registerIpc = () => {
   ipcMain.handle('workspace:set-path', (_event, workspacePath: string) => addProjectPath(workspacePath))
   ipcMain.handle('workspace:select-project', (_event, projectPath: string) => selectProjectPath(projectPath))
   ipcMain.handle('workspace:remove-project', (_event, projectPath: string) => removeProjectPath(projectPath))
+  ipcMain.handle('workspace:reorder-projects', (_event, orderedPaths: string[]) => reorderProjectPaths(orderedPaths))
+  ipcMain.handle('workspace:set-default-tab-command', (_event, command: string) => setDefaultTabCommand(command))
   ipcMain.handle('workspace:pick-path', async () => {
     const config = await getAppConfig()
     const options: OpenDialogOptions = {
@@ -107,6 +118,9 @@ const registerIpc = () => {
   ipcMain.handle('worktrees:remove', async (_event, input: DeleteWorktreeInput) => {
     const config = await requireActiveProject()
     return removeWorktree(config.activeProject.repoPath, input.path)
+  })
+  ipcMain.handle('clipboard:write-text', (_event, text: string) => {
+    clipboard.writeText(text)
   })
 
   ipcMain.handle('terminal:create-session', (_event, input: CreateTerminalSessionInput) => {
@@ -141,6 +155,20 @@ const registerIpc = () => {
   ipcMain.handle('claude:is-hooks-enabled', () => isClaudeHooksEnabled())
   ipcMain.handle('claude:enable-hooks', () => enableClaudeHooks())
   ipcMain.handle('claude:disable-hooks', () => disableClaudeHooks())
+
+  ipcMain.handle('cli:is-installed', () => isCliInstalled())
+  ipcMain.handle('cli:install', () => installCli())
+  ipcMain.handle('cli:uninstall', () => uninstallCli())
+}
+
+function fixPath(): void {
+  if (process.platform !== 'darwin') return
+  const extraPaths = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin']
+  const current = process.env.PATH ?? ''
+  const missing = extraPaths.filter((p) => !current.split(':').includes(p))
+  if (missing.length > 0) {
+    process.env.PATH = `${current}:${missing.join(':')}`
+  }
 }
 
 function isTmuxInstalled(): boolean {
@@ -153,6 +181,8 @@ function isTmuxInstalled(): boolean {
 }
 
 app.whenReady().then(async () => {
+  fixPath()
+
   if (!isTmuxInstalled()) {
     const { response } = await dialog.showMessageBox({
       type: 'error',
@@ -172,6 +202,15 @@ app.whenReady().then(async () => {
 
     app.quit()
     return
+  }
+
+  // Handle --open-path CLI argument
+  const openPathIndex = process.argv.indexOf('--open-path')
+  if (openPathIndex !== -1 && process.argv[openPathIndex + 1]) {
+    const targetPath = process.argv[openPathIndex + 1]
+    await addProjectPath(targetPath).catch(() => {
+      // Path may already be added or invalid — ignore silently
+    })
   }
 
   // Custom menu that only keeps essential app shortcuts.
@@ -254,6 +293,10 @@ app.whenReady().then(async () => {
     }
 
     const key = input.key.toUpperCase()
+    if (input.shift && key === 'C') {
+      return
+    }
+
     if (key.length === 1 && key >= 'A' && key <= 'Z') {
       event.preventDefault()
       const controlChar = String.fromCharCode(key.charCodeAt(0) - 64)
