@@ -100,6 +100,14 @@ export interface ClaudeSessionInfo {
   shellPid: number
 }
 
+export interface OpenCodeSessionInfo {
+  sessionId: string
+  status: 'working' | 'idle'
+  cwd: string
+  name: string | null
+  shellPid: number
+}
+
 export interface ElectronApi {
   workspace: {
     getConfig: () => Promise<AppConfig>
@@ -146,6 +154,9 @@ export interface ElectronApi {
     isHooksEnabled: () => Promise<boolean>
     enableHooks: () => Promise<void>
     disableHooks: () => Promise<void>
+  }
+  opencode: {
+    onSessionChange: (listener: (sessions: OpenCodeSessionInfo[]) => void) => () => void
   }
   cli: {
     isInstalled: () => Promise<boolean>

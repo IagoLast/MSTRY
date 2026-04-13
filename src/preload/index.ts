@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type {
   ClaudeSessionInfo,
   ElectronApi,
+  OpenCodeSessionInfo,
   PersistedTabState,
   TerminalDataEvent,
   TerminalExitEvent,
@@ -107,6 +108,19 @@ const api: ElectronApi = {
     isInstalled: () => ipcRenderer.invoke('cli:is-installed'),
     install: () => ipcRenderer.invoke('cli:install'),
     uninstall: () => ipcRenderer.invoke('cli:uninstall')
+  },
+  opencode: {
+    onSessionChange: (listener) => {
+      const wrappedListener = (
+        _event: Electron.IpcRendererEvent,
+        payload: OpenCodeSessionInfo[]
+      ) => {
+        listener(payload)
+      }
+
+      ipcRenderer.on('opencode:session-change', wrappedListener)
+      return () => ipcRenderer.off('opencode:session-change', wrappedListener)
+    }
   }
 }
 

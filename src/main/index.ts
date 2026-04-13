@@ -23,6 +23,7 @@ import {
 } from './config'
 import { ClaudeStatusWatcher } from './claude-status'
 import { createWorktree, listWorkspaceItems, removeWorktree } from './git'
+import { OpenCodeStatusWatcher } from './opencode-status'
 import { loadTabState, saveTabState } from './tab-store'
 import { TerminalManager } from './terminal-manager'
 import type {
@@ -38,6 +39,7 @@ import type {
 let mainWindow: BrowserWindow | null = null
 const terminalManager = new TerminalManager()
 const claudeStatus = new ClaudeStatusWatcher()
+const opencodeStatus = new OpenCodeStatusWatcher()
 
 interface ReadyAppConfig extends AppConfig {
   activeProject: Project
@@ -308,7 +310,14 @@ app.whenReady().then(async () => {
     }
   })
 
+  opencodeStatus.on('change', (sessions) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('opencode:session-change', sessions)
+    }
+  })
+
   claudeStatus.start()
+  opencodeStatus.start()
 
   try {
     const persistedTabs = await loadTabState()
@@ -354,6 +363,7 @@ app.on('window-all-closed', () => {
 
 app.on('before-quit', () => {
   claudeStatus.stop()
+  opencodeStatus.stop()
   // Only detach PTYs — tmux sessions survive for reattach on next launch.
   terminalManager.disposeAll()
 })

@@ -37,7 +37,7 @@ import {
   VscTrash
 } from 'react-icons/vsc'
 
-import type { AppConfig, ClaudeSessionInfo, PersistedTab, Project, WorkspaceItem } from '../../shared/contracts'
+import type { AppConfig, ClaudeSessionInfo, OpenCodeSessionInfo, PersistedTab, Project, WorkspaceItem } from '../../shared/contracts'
 import { CommandPalette, type CommandItem } from './components/command-palette'
 import { SettingsPanel } from './components/settings-panel'
 import { WorktreeTerminal } from './components/worktree-terminal'
@@ -78,6 +78,9 @@ const createRestoredTab = (persisted: PersistedTab): TerminalTab => ({
 
 const isClaudeProcess = (name: string | null) =>
   name != null && /\bclaude\b/i.test(name)
+
+const isOpenCodeProcess = (name: string | null) =>
+  name != null && /\bopencode\b/i.test(name)
 
 const selectedWorkspaceQueryKey = ['ui', 'selected-workspace'] as const
 
@@ -420,11 +423,18 @@ export function App() {
   }, [])
 
   const [claudeSessions, setClaudeSessions] = useState<ClaudeSessionInfo[]>([])
+  const [opencodeSessions, setOpencodeSessions] = useState<OpenCodeSessionInfo[]>([])
   const tabsRestoredRef = useRef(false)
 
   useEffect(() => {
     const electree = getElectronBridge()
     const off = electree.claude.onSessionChange(setClaudeSessions)
+    return off
+  }, [])
+
+  useEffect(() => {
+    const electree = getElectronBridge()
+    const off = electree.opencode.onSessionChange(setOpencodeSessions)
     return off
   }, [])
 
@@ -1174,12 +1184,19 @@ export function App() {
                   const claudeInfo = tab.pid
                     ? claudeSessions.find((s) => s.shellPid === tab.pid) ?? null
                     : null
+                  const opencodeInfo = tab.pid
+                    ? opencodeSessions.find((s) => s.shellPid === tab.pid) ?? null
+                    : null
                   const isClaude = claudeInfo !== null || isClaudeProcess(tab.processName)
+                  const isOpenCode = opencodeInfo !== null || isOpenCodeProcess(tab.processName)
+                  const isAgent = isClaude || isOpenCode
                   const isActive =
                     selectedWorkspacePath === tab.workspacePath &&
                     activeTabId[tab.workspacePath] === tab.id
-                  const label = isClaude
-                    ? (claudeInfo?.name ?? claudeInfo?.prompt ?? 'Claude')
+                  const agentInfo = isOpenCode ? opencodeInfo : claudeInfo
+                  const agentPrompt = isOpenCode ? null : (agentInfo as ClaudeSessionInfo | null)?.prompt
+                  const label = isAgent
+                    ? (agentInfo?.name ?? agentPrompt ?? (isOpenCode ? 'OpenCode' : 'Claude'))
                     : 'Terminal'
 
                   return (
@@ -1195,26 +1212,26 @@ export function App() {
                       )}
                     >
                       <span className="relative flex size-4 shrink-0 items-center justify-center text-icon">
-                        {isClaude ? (
+                        {isAgent ? (
                           <span
                             className={cn(
                               'text-[10px] font-bold',
-                              claudeInfo?.status === 'working' && 'text-green-400',
-                              claudeInfo?.status === 'idle' && 'text-red-400'
+                              agentInfo?.status === 'working' && 'text-green-400',
+                              agentInfo?.status === 'idle' && 'text-red-400'
                             )}
                           >
-                            C
+                            {isOpenCode ? 'O' : 'C'}
                           </span>
                         ) : (
                           <VscTerminalBash className="size-3.5" />
                         )}
-                        {isClaude && claudeInfo ? (
+                        {isAgent && agentInfo ? (
                           <span
                             className={cn(
                               'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-sidebar',
-                              claudeInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
+                              agentInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
                             )}
-                            title={claudeInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                            title={agentInfo.status === 'working' ? 'Working...' : 'Needs input'}
                           />
                         ) : null}
                       </span>
@@ -1290,7 +1307,14 @@ export function App() {
                 const claudeInfo = tab.pid
                   ? claudeSessions.find((s) => s.shellPid === tab.pid) ?? null
                   : null
+                const opencodeInfo = tab.pid
+                  ? opencodeSessions.find((s) => s.shellPid === tab.pid) ?? null
+                  : null
                 const isClaude = claudeInfo !== null || isClaudeProcess(tab.processName)
+                const isOpenCode = opencodeInfo !== null || isOpenCodeProcess(tab.processName)
+                const isAgent = isClaude || isOpenCode
+                const agentInfo = isOpenCode ? opencodeInfo : claudeInfo
+                const agentPrompt = isOpenCode ? null : (agentInfo as ClaudeSessionInfo | null)?.prompt
 
                 return (
                   <button
@@ -1313,32 +1337,32 @@ export function App() {
                       </span>
                     ) : null}
                     <span className="relative flex size-3.5 shrink-0 items-center justify-center">
-                      {isClaude ? (
+                      {isAgent ? (
                         <span
                           className={cn(
                             'text-[10px] font-bold',
-                            claudeInfo?.status === 'working' && 'text-green-400',
-                            claudeInfo?.status === 'idle' && 'text-red-400'
+                            agentInfo?.status === 'working' && 'text-green-400',
+                            agentInfo?.status === 'idle' && 'text-red-400'
                           )}
                         >
-                          C
+                          {isOpenCode ? 'O' : 'C'}
                         </span>
                       ) : (
                         <VscTerminalBash className="size-3.5" />
                       )}
-                      {isClaude && claudeInfo ? (
+                      {isAgent && agentInfo ? (
                         <span
                           className={cn(
                             'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-surface',
-                            claudeInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
+                            agentInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
                           )}
-                          title={claudeInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                          title={agentInfo.status === 'working' ? 'Working...' : 'Needs input'}
                         />
                       ) : null}
                     </span>
                     <span className="truncate">
-                      {isClaude
-                        ? (claudeInfo?.name ?? claudeInfo?.prompt ?? 'Claude')
+                      {isAgent
+                        ? (agentInfo?.name ?? agentPrompt ?? (isOpenCode ? 'OpenCode' : 'Claude'))
                         : (selectedWorkspace?.branch ?? selectedWorkspace?.name ?? 'Terminal')}
                     </span>
                     {currentTabs.length > 1 ? (
