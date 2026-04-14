@@ -5,6 +5,7 @@ import os from 'node:os'
 const CLAUDE_SETTINGS_PATH = path.join(os.homedir(), '.claude', 'settings.json')
 
 const HOOK_EVENTS = ['PreToolUse', 'UserPromptSubmit', 'Stop', 'SessionEnd'] as const
+const MANAGED_HOOK_FILENAMES = ['mstry-claude-hook.sh', 'electree-claude-hook.sh'] as const
 
 const getHookCommand = () => {
   // Use the hook script bundled alongside the app.
@@ -48,17 +49,31 @@ const writeSettings = (settings: ClaudeSettings) => {
   writeFileSync(CLAUDE_SETTINGS_PATH, JSON.stringify(settings, null, 2) + '\n', 'utf-8')
 }
 
-const isMstryHook = (entry: HookEntry) =>
-  entry.command.includes('mstry-claude-hook')
+const isManagedHook = (entry: HookEntry) =>
+  MANAGED_HOOK_FILENAMES.some((filename) => entry.command.includes(filename))
+
+const hasCurrentCommand = (entry: HookEntry, command: string) =>
+  path.resolve(entry.command) === command
+
+const stripManagedHooks = (matchers: HookMatcher[] = []) =>
+  matchers
+    .map((matcher) => ({
+      ...matcher,
+      hooks: matcher.hooks.filter((hook) => !isManagedHook(hook))
+    }))
+    .filter((matcher) => matcher.hooks.length > 0)
 
 export const isClaudeHooksEnabled = (): boolean => {
   const settings = readSettings()
   if (!settings.hooks) return false
+  const command = path.resolve(getHookCommand())
 
   return HOOK_EVENTS.every((event) => {
     const matchers = settings.hooks?.[event]
     if (!matchers) return false
-    return matchers.some((m) => m.hooks.some(isMstryHook))
+    return matchers.some((matcher) =>
+      matcher.hooks.some((hook) => isManagedHook(hook) && hasCurrentCommand(hook, command))
+    )
   })
 }
 
@@ -66,25 +81,16 @@ export const enableClaudeHooks = (): void => {
   const settings = readSettings()
   if (!settings.hooks) settings.hooks = {}
 
-  const command = getHookCommand()
-  const mstryHook: HookEntry = { type: 'command', command }
+  const command = path.resolve(getHookCommand())
 
   for (const event of HOOK_EVENTS) {
-    if (!settings.hooks[event]) {
-      settings.hooks[event] = []
-    }
-
-    // Check if already registered
-    const alreadyExists = settings.hooks[event].some((m) =>
-      m.hooks.some(isMstryHook)
-    )
-
-    if (!alreadyExists) {
-      settings.hooks[event].push({
+    settings.hooks[event] = [
+      ...stripManagedHooks(settings.hooks[event]),
+      {
         matcher: '',
-        hooks: [mstryHook]
-      })
-    }
+        hooks: [{ type: 'command', command }]
+      }
+    ]
   }
 
   writeSettings(settings)
@@ -98,12 +104,7 @@ export const disableClaudeHooks = (): void => {
     const matchers = settings.hooks[event]
     if (!matchers) continue
 
-    settings.hooks[event] = matchers
-      .map((m) => ({
-        ...m,
-        hooks: m.hooks.filter((h) => !isMstryHook(h))
-      }))
-      .filter((m) => m.hooks.length > 0)
+    settings.hooks[event] = stripManagedHooks(matchers)
 
     if (settings.hooks[event].length === 0) {
       delete settings.hooks[event]

@@ -66,6 +66,58 @@ const createRestoredTab = (persisted: PersistedTab): TerminalTab => ({
   processName: null
 })
 
+const isSameOrChildPath = (basePath: string, candidatePath: string) => {
+  const normalizedBasePath = basePath.replace(/[\\/]+$/, '')
+  return (
+    candidatePath === normalizedBasePath ||
+    candidatePath.startsWith(`${normalizedBasePath}/`) ||
+    candidatePath.startsWith(`${normalizedBasePath}\\`)
+  )
+}
+
+const getProjectMatchLength = (project: Project, workspacePath: string) => {
+  const matches = [project.rootPath, project.worktreeRoot]
+    .filter((candidatePath): candidatePath is string => Boolean(candidatePath))
+    .filter((candidatePath) => isSameOrChildPath(candidatePath, workspacePath))
+    .map((candidatePath) => candidatePath.length)
+
+  return matches.length > 0 ? Math.max(...matches) : 0
+}
+
+const workspaceBelongsToProject = (project: Project, workspacePath: string) =>
+  getProjectMatchLength(project, workspacePath) > 0
+
+const findOwnerProject = (projects: Project[], workspacePath: string) => {
+  let ownerProject: Project | null = null
+  let bestMatchLength = 0
+
+  for (const project of projects) {
+    const matchLength = getProjectMatchLength(project, workspacePath)
+    if (matchLength > bestMatchLength) {
+      ownerProject = project
+      bestMatchLength = matchLength
+    }
+  }
+
+  return ownerProject
+}
+
+const buildValidActiveTabId = <T extends { id: string; workspacePath: string }>(
+  tabs: T[],
+  currentActiveTabId: Record<string, string>
+) =>
+  Object.fromEntries(
+    [...tabs.reduce<Map<string, T[]>>((acc, tab) => {
+      const workspaceTabs = acc.get(tab.workspacePath) ?? []
+      workspaceTabs.push(tab)
+      acc.set(tab.workspacePath, workspaceTabs)
+      return acc
+    }, new Map()).entries()].map(([workspacePath, workspaceTabs]) => {
+      const activeTab = workspaceTabs.find((tab) => tab.id === currentActiveTabId[workspacePath]) ?? workspaceTabs[0]
+      return [workspacePath, activeTab.id]
+    })
+  )
+
 const isClaudeProcess = (name: string | null) =>
   name != null && /\bclaude\b/i.test(name)
 
@@ -118,6 +170,9 @@ export function App() {
   const { selectedWorkspacePath, setSelectedWorkspacePath } = useSelectedWorkspace()
   const [tabs, setTabs] = useState<TerminalTab[]>([])
   const [activeTabId, setActiveTabId] = useState<Record<string, string>>({})
+  const tabsRef = useRef<TerminalTab[]>([])
+  const activeTabIdRef = useRef<Record<string, string>>({})
+  const selectedWorkspacePathRef = useRef<string | null>(selectedWorkspacePath)
   const [agentsCollapsed, setAgentsCollapsed] = useState(false)
   const [collapsedAgentProjects, setCollapsedAgentProjects] = useState<Set<string>>(new Set())
   const [collapsedAgentWorktrees, setCollapsedAgentWorktrees] = useState<Set<string>>(new Set())
@@ -143,6 +198,38 @@ export function App() {
     [appConfigQuery.data]
   )
   const defaultTabCommand = appConfigQuery.data?.defaultTabCommand || undefined
+
+  useEffect(() => {
+    tabsRef.current = tabs
+  }, [tabs])
+
+  useEffect(() => {
+    activeTabIdRef.current = activeTabId
+  }, [activeTabId])
+
+  useEffect(() => {
+    selectedWorkspacePathRef.current = selectedWorkspacePath
+  }, [selectedWorkspacePath])
+
+  const commitTabState = useCallback(
+    (nextTabs: TerminalTab[]) => {
+      const nextActiveTabId = buildValidActiveTabId(nextTabs, activeTabIdRef.current)
+      const currentSelectedWorkspacePath = selectedWorkspacePathRef.current
+      const nextSelectedWorkspacePath =
+        currentSelectedWorkspacePath && nextTabs.some((tab) => tab.workspacePath === currentSelectedWorkspacePath)
+          ? currentSelectedWorkspacePath
+          : nextTabs[0]?.workspacePath ?? null
+
+      tabsRef.current = nextTabs
+      activeTabIdRef.current = nextActiveTabId
+      selectedWorkspacePathRef.current = nextSelectedWorkspacePath
+
+      setTabs(nextTabs)
+      setActiveTabId(nextActiveTabId)
+      setSelectedWorkspacePath(nextSelectedWorkspacePath)
+    },
+    [setSelectedWorkspacePath]
+  )
 
   const workspacesQuery = useQuery({
     queryKey: ['workspaces', activeProject?.rootPath],
@@ -176,17 +263,15 @@ export function App() {
     onSuccess: (config, removedProject) => {
       queryClient.setQueryData(['app-config'], config)
       const bridge = getElectronBridge()
-      setTabs((current) => {
-        const removed = current.filter((tab) => {
-          if (tab.workspacePath === removedProject.rootPath) return true
-          if (removedProject.worktreeRoot && tab.workspacePath.startsWith(removedProject.worktreeRoot)) return true
-          return false
-        })
-        for (const tab of removed) {
-          if (tab.tmuxSessionName) void bridge.terminal.destroySession(tab.tmuxSessionName)
-        }
-        return current.filter((tab) => !removed.includes(tab))
-      })
+      const removedTabIds = new Set(
+        tabsRef.current
+          .filter((tab) => workspaceBelongsToProject(removedProject, tab.workspacePath))
+          .map((tab) => {
+            if (tab.tmuxSessionName) void bridge.terminal.destroySession(tab.tmuxSessionName)
+            return tab.id
+          })
+      )
+      commitTabState(tabsRef.current.filter((tab) => !removedTabIds.has(tab.id)))
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }
   })
@@ -203,19 +288,16 @@ export function App() {
   const removeWorktreeMutation = useMutation({
     mutationFn: (workspacePath: string) => getElectronBridge().worktrees.remove({ path: workspacePath }),
     onSuccess: (result, workspacePath) => {
-      if (selectedWorkspacePath === workspacePath) {
-        setSelectedWorkspacePath(null)
-      }
-
       const bridge = getElectronBridge()
-      setTabs((current) => {
-        for (const tab of current) {
-          if (tab.workspacePath === workspacePath && tab.tmuxSessionName) {
-            void bridge.terminal.destroySession(tab.tmuxSessionName)
-          }
-        }
-        return current.filter((tab) => tab.workspacePath !== workspacePath)
-      })
+      const removedTabIds = new Set(
+        tabsRef.current
+          .filter((tab) => tab.workspacePath === workspacePath)
+          .map((tab) => {
+            if (tab.tmuxSessionName) void bridge.terminal.destroySession(tab.tmuxSessionName)
+            return tab.id
+          })
+      )
+      commitTabState(tabsRef.current.filter((tab) => !removedTabIds.has(tab.id)))
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
 
       if (result.warning) {
@@ -232,11 +314,13 @@ export function App() {
       return
     }
 
-    const stillExists = availableItems.some((item) => item.path === selectedWorkspacePath)
+    const stillExists =
+      availableItems.some((item) => item.path === selectedWorkspacePath) ||
+      tabs.some((tab) => tab.workspacePath === selectedWorkspacePath)
     if (!stillExists) {
       setSelectedWorkspacePath(availableItems[0].path)
     }
-  }, [selectedWorkspacePath, setSelectedWorkspacePath, workspacesQuery.data])
+  }, [selectedWorkspacePath, setSelectedWorkspacePath, tabs, workspacesQuery.data])
 
   useEffect(() => {
     if (!selectedWorkspacePath) {
@@ -307,10 +391,14 @@ export function App() {
 
       const aliveSet = new Set(aliveSessions)
       const validTabs = persisted.tabs.filter((t) => aliveSet.has(t.tmuxSessionName))
+      const nextActiveTabId = buildValidActiveTabId(validTabs, persisted.activeTabId)
 
       if (validTabs.length > 0) {
-        setTabs(validTabs.map(createRestoredTab))
-        setActiveTabId(persisted.activeTabId)
+        const restoredTabs = validTabs.map(createRestoredTab)
+        tabsRef.current = restoredTabs
+        activeTabIdRef.current = nextActiveTabId
+        setTabs(restoredTabs)
+        setActiveTabId(nextActiveTabId)
       }
     })()
   }, [])
@@ -359,16 +447,8 @@ export function App() {
 
     const tabsByProject = new Map<string, TerminalTab[]>()
     for (const tab of tabs) {
-      let projectPath = '__orphan__'
-      for (const project of projects) {
-        if (
-          tab.workspacePath === project.rootPath ||
-          (project.worktreeRoot && tab.workspacePath.startsWith(project.worktreeRoot))
-        ) {
-          projectPath = project.rootPath
-          break
-        }
-      }
+      const ownerProject = findOwnerProject(projects, tab.workspacePath)
+      const projectPath = ownerProject?.rootPath ?? '__orphan__'
       if (!tabsByProject.has(projectPath)) tabsByProject.set(projectPath, [])
       tabsByProject.get(projectPath)!.push(tab)
     }
@@ -413,6 +493,32 @@ export function App() {
     void getElectronBridge().terminal.toggleMouse()
   }, [])
 
+  const handleDeleteOrphanTabs = useCallback(() => {
+    const projects = appConfigQuery.data?.projects ?? []
+    const orphanTabs = tabsRef.current.filter((tab) => !findOwnerProject(projects, tab.workspacePath))
+
+    if (orphanTabs.length === 0) return
+
+    const label = orphanTabs.length === 1 ? '1 agente huerfano' : `${orphanTabs.length} agentes huerfanos`
+    if (
+      !window.confirm(
+        `Quitar ${label}.\n\nSe cerraran sus terminales y desapareceran de la barra lateral.`
+      )
+    ) {
+      return
+    }
+
+    const bridge = getElectronBridge()
+    const orphanTabIds = new Set(
+      orphanTabs.map((tab) => {
+        if (tab.tmuxSessionName) void bridge.terminal.destroySession(tab.tmuxSessionName)
+        return tab.id
+      })
+    )
+
+    commitTabState(tabsRef.current.filter((tab) => !orphanTabIds.has(tab.id)))
+  }, [appConfigQuery.data?.projects, commitTabState])
+
   const handleNewTab = useCallback(() => {
     if (!selectedWorkspacePath) return
     const tab = createTab(selectedWorkspacePath, defaultTabCommand)
@@ -430,11 +536,7 @@ export function App() {
   const handleSelectTab = useCallback(
     (tab: TerminalTab) => {
       const projects = appConfigQuery.data?.projects ?? []
-      const ownerProject = projects.find((project) => {
-        if (tab.workspacePath === project.rootPath) return true
-        if (project.worktreeRoot && tab.workspacePath.startsWith(project.worktreeRoot)) return true
-        return false
-      })
+      const ownerProject = findOwnerProject(projects, tab.workspacePath)
       if (ownerProject && ownerProject.rootPath !== activeProject?.rootPath) {
         selectProjectMutation.mutate(ownerProject.rootPath)
       }
@@ -458,29 +560,16 @@ export function App() {
 
   const handleKillAgent = useCallback(
     (tabId: string) => {
-      const target = tabs.find((tab) => tab.id === tabId)
+      const target = tabsRef.current.find((tab) => tab.id === tabId)
       if (!target) return
 
       if (target.tmuxSessionName) {
         void getElectronBridge().terminal.destroySession(target.tmuxSessionName)
       }
 
-      setTabs((current) => current.filter((tab) => tab.id !== tabId))
-      setActiveTabId((current) => {
-        if (current[target.workspacePath] !== tabId) return current
-        const remaining = tabs.filter(
-          (tab) => tab.workspacePath === target.workspacePath && tab.id !== tabId
-        )
-        const next = { ...current }
-        if (remaining.length > 0) {
-          next[target.workspacePath] = remaining[0].id
-        } else {
-          delete next[target.workspacePath]
-        }
-        return next
-      })
+      commitTabState(tabsRef.current.filter((tab) => tab.id !== tabId))
     },
-    [tabs]
+    [commitTabState]
   )
 
   const handleCloseTab = useCallback(
@@ -837,6 +926,19 @@ export function App() {
                           onClick={() => group.project && void handleDeleteProject(group.project)}
                           aria-label={`Remove ${group.project.name}`}
                           title="Remove project"
+                        >
+                          <VscTrash className="size-3.5" />
+                        </Button>
+                      ) : null}
+
+                      {!group.project ? (
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-5 shrink-0 rounded opacity-0 group-hover:opacity-100"
+                          onClick={() => handleDeleteOrphanTabs()}
+                          aria-label="Remove orphan agents"
+                          title="Remove orphan agents"
                         >
                           <VscTrash className="size-3.5" />
                         </Button>

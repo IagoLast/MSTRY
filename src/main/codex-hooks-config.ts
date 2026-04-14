@@ -5,6 +5,7 @@ import path from 'node:path'
 const CODEX_CONFIG_DIR = path.join(os.homedir(), '.codex')
 const CODEX_CONFIG_PATH = path.join(CODEX_CONFIG_DIR, 'config.toml')
 const CODEX_HOOKS_PATH = path.join(CODEX_CONFIG_DIR, 'hooks.json')
+const MANAGED_HOOK_FILENAMES = ['mstry-codex-hook.sh', 'electree-codex-hook.sh'] as const
 
 interface HookDefinition {
   event: string
@@ -65,7 +66,16 @@ const writeHooksFile = (settings: HooksFile) => {
   writeFileSync(CODEX_HOOKS_PATH, JSON.stringify(settings, null, 2) + '\n', 'utf-8')
 }
 
-const isMstryHook = (entry: HookEntry) => entry.command.includes('mstry-codex-hook')
+const isManagedHook = (entry: HookEntry) =>
+  MANAGED_HOOK_FILENAMES.some((filename) => entry.command.includes(filename))
+
+const stripManagedHooks = (matchers: HookMatcher[] = []) =>
+  matchers
+    .map((matcher) => ({
+      ...matcher,
+      hooks: matcher.hooks.filter((hook) => !isManagedHook(hook))
+    }))
+    .filter((matcher) => matcher.hooks.length > 0)
 
 const isCodexFeatureEnabled = (): boolean => {
   if (!existsSync(CODEX_CONFIG_PATH)) return false
@@ -160,7 +170,7 @@ export const isCodexHooksEnabled = (): boolean => {
     if (!matchers) return false
 
     return matchers.some((matcher) =>
-      matcher.hooks.some((hook) => isMstryHook(hook) && hook.command === currentCommand)
+      matcher.hooks.some((hook) => isManagedHook(hook) && hook.command === currentCommand)
     )
   })
 }
@@ -172,28 +182,15 @@ export const enableCodexHooks = (): void => {
   if (!settings.hooks) settings.hooks = {}
 
   const command = getHookCommand()
-  const mstryHook: HookEntry = { type: 'command', command }
 
   for (const { event, matcher } of HOOK_DEFINITIONS) {
-    if (!settings.hooks[event]) {
-      settings.hooks[event] = []
-    }
-
-    const existingMatcher = settings.hooks[event].find((item) =>
-      item.hooks.some(isMstryHook)
-    )
-
-    if (existingMatcher) {
-      existingMatcher.matcher = matcher
-      existingMatcher.hooks = existingMatcher.hooks.map((hook) =>
-        isMstryHook(hook) ? { ...hook, command } : hook
-      )
-    } else {
-      settings.hooks[event].push({
+    settings.hooks[event] = [
+      ...stripManagedHooks(settings.hooks[event]),
+      {
         ...(matcher ? { matcher } : {}),
-        hooks: [mstryHook]
-      })
-    }
+        hooks: [{ type: 'command', command }]
+      }
+    ]
   }
 
   writeHooksFile(settings)
@@ -207,12 +204,7 @@ export const disableCodexHooks = (): void => {
     const matchers = settings.hooks[event]
     if (!matchers) continue
 
-    settings.hooks[event] = matchers
-      .map((matcher) => ({
-        ...matcher,
-        hooks: matcher.hooks.filter((hook) => !isMstryHook(hook))
-      }))
-      .filter((matcher) => matcher.hooks.length > 0)
+    settings.hooks[event] = stripManagedHooks(matchers)
 
     if (settings.hooks[event].length === 0) {
       delete settings.hooks[event]
