@@ -55,7 +55,15 @@ You can have N projects, each with M worktrees, each with K terminal tabs — al
 - [tmux](https://github.com/tmux/tmux) — session persistence
 - [Tailwind CSS v4](https://tailwindcss.com/) — styling
 
-## Getting started
+## Installation
+
+### Quick install (macOS)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/IagoLast/MSTRY/main/scripts/remote-install.sh | bash
+```
+
+This will clone the repo, build the app, and install it into `/Applications`. Requires Node.js, tmux, and git.
 
 ### Prerequisites
 
