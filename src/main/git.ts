@@ -3,7 +3,12 @@ import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
-import type { CreateWorktreeInput, DeleteWorktreeResult, WorkspaceItem } from '../shared/contracts'
+import type {
+  CheckoutMainResult,
+  CreateWorktreeInput,
+  DeleteWorktreeResult,
+  WorkspaceItem
+} from '../shared/contracts'
 
 const execFileAsync = promisify(execFile)
 
@@ -133,6 +138,62 @@ export const listWorkspaceItems = async (rootPath: string, repoPath: string | nu
   return parseWorktrees(output, repoPath)
 }
 
+const splitGitLines = (output: string) =>
+  output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+
+const listLocalBranches = async (repoPath: string) => {
+  const output = await runGit(repoPath, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'])
+  return splitGitLines(output)
+}
+
+const listRemotes = async (repoPath: string) => {
+  const output = await runGit(repoPath, ['remote'])
+  return splitGitLines(output)
+}
+
+const resolveRemoteHead = async (repoPath: string) => {
+  for (const remote of await listRemotes(repoPath)) {
+    try {
+      const ref = await runGit(repoPath, ['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`])
+      const prefix = `refs/remotes/${remote}/`
+
+      if (ref.startsWith(prefix)) {
+        return {
+          remote,
+          branch: ref.slice(prefix.length)
+        }
+      }
+    } catch {
+      // Some remotes don't expose HEAD, so keep searching.
+    }
+  }
+
+  return null
+}
+
+const resolvePrimaryBranch = async (repoPath: string) => {
+  const remoteHead = await resolveRemoteHead(repoPath)
+  if (remoteHead?.branch) {
+    return remoteHead
+  }
+
+  const localBranches = await listLocalBranches(repoPath)
+  if (localBranches.includes('main')) {
+    return { remote: null, branch: 'main' }
+  }
+
+  if (localBranches.includes('master')) {
+    return { remote: null, branch: 'master' }
+  }
+
+  throw new Error(
+    'No pude detectar la rama principal. Probe con HEAD del remoto, main y master.'
+  )
+}
+
 export const createWorktree = async (
   repoPath: string | null,
   worktreeRoot: string | null,
@@ -206,4 +267,27 @@ export const removeWorktree = async (
     removedBranch: targetWorktree.branch,
     warning
   }
+}
+
+export const checkoutMainWorkspace = async (
+  repoPath: string | null
+): Promise<CheckoutMainResult> => {
+  if (!repoPath) {
+    throw new Error('El checkout de la rama principal solo esta disponible en repositorios Git.')
+  }
+
+  const [{ branch, remote }, localBranches] = await Promise.all([
+    resolvePrimaryBranch(repoPath),
+    listLocalBranches(repoPath)
+  ])
+
+  if (localBranches.includes(branch)) {
+    await runGit(repoPath, ['checkout', branch])
+  } else if (remote) {
+    await runGit(repoPath, ['checkout', '-b', branch, '--track', `${remote}/${branch}`])
+  } else {
+    throw new Error(`No encontre una rama local ${branch} para hacer checkout.`)
+  }
+
+  return { branch }
 }

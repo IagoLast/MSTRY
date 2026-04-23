@@ -26,16 +26,21 @@ import {
   setDefaultTabCommand
 } from './config'
 import { ClaudeStatusWatcher } from './claude-status'
-import { createWorktree, listWorkspaceItems, removeWorktree } from './git'
+import { getGitStatus, listDirectory } from './files'
+import { checkoutMainWorkspace, createWorktree, listWorkspaceItems, removeWorktree } from './git'
 import { OpenCodeStatusWatcher } from './opencode-status'
 import { loadTabState, saveTabState } from './tab-store'
 import { TerminalManager } from './terminal-manager'
 import type {
   AppConfig,
   AttachTerminalSessionInput,
+  CheckoutMainInput,
   CreateTerminalSessionInput,
   CreateWorktreeInput,
   DeleteWorktreeInput,
+  GitStatusInput,
+  ListDirectoryInput,
+  ListWorktreesInput,
   PersistedTabState,
   Project
 } from '../shared/contracts'
@@ -73,9 +78,10 @@ const createWindow = async () => {
   }
 }
 
-const requireActiveProject = async (): Promise<ReadyAppConfig> => {
+const requireProject = async (projectPath?: string | null): Promise<ReadyAppConfig> => {
   const config = await getAppConfig()
-  const activeProject = config.projects.find((project) => project.rootPath === config.activeProjectPath)
+  const targetProjectPath = projectPath ? path.resolve(projectPath) : config.activeProjectPath
+  const activeProject = config.projects.find((project) => project.rootPath === targetProjectPath)
 
   if (!activeProject) {
     throw new Error('Configura primero una carpeta de trabajo.')
@@ -112,19 +118,23 @@ const registerIpc = () => {
     return addProjectPath(result.filePaths[0])
   })
 
-  ipcMain.handle('worktrees:list', async () => {
-    const config = await requireActiveProject()
+  ipcMain.handle('worktrees:list', async (_event, input?: ListWorktreesInput) => {
+    const config = await requireProject(input?.projectPath)
     return listWorkspaceItems(config.activeProject.rootPath, config.activeProject.repoPath)
   })
 
   ipcMain.handle('worktrees:create', async (_event, input: CreateWorktreeInput) => {
-    const config = await requireActiveProject()
+    const config = await requireProject(input.projectPath)
     return createWorktree(config.activeProject.repoPath, config.activeProject.worktreeRoot, input)
   })
 
   ipcMain.handle('worktrees:remove', async (_event, input: DeleteWorktreeInput) => {
-    const config = await requireActiveProject()
+    const config = await requireProject(input.projectPath)
     return removeWorktree(config.activeProject.repoPath, input.path)
+  })
+  ipcMain.handle('worktrees:checkout-main', async (_event, input?: CheckoutMainInput) => {
+    const config = await requireProject(input?.projectPath)
+    return checkoutMainWorkspace(config.activeProject.repoPath)
   })
   ipcMain.handle('clipboard:write-text', (_event, text: string) => {
     clipboard.writeText(text)
@@ -190,6 +200,11 @@ const registerIpc = () => {
   ipcMain.handle('cli:is-installed', () => isCliInstalled())
   ipcMain.handle('cli:install', () => installCli())
   ipcMain.handle('cli:uninstall', () => uninstallCli())
+
+  ipcMain.handle('files:list-directory', (_event, input: ListDirectoryInput) =>
+    listDirectory(input)
+  )
+  ipcMain.handle('files:git-status', (_event, input: GitStatusInput) => getGitStatus(input.cwd))
 }
 
 function fixPath(): void {

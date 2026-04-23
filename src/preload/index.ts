@@ -24,9 +24,10 @@ const api: ElectronApi = {
     setDefaultTabCommand: (command) => ipcRenderer.invoke('workspace:set-default-tab-command', command)
   },
   worktrees: {
-    list: () => ipcRenderer.invoke('worktrees:list'),
+    list: (input) => ipcRenderer.invoke('worktrees:list', input),
     create: (input) => ipcRenderer.invoke('worktrees:create', input),
-    remove: (input) => ipcRenderer.invoke('worktrees:remove', input)
+    remove: (input) => ipcRenderer.invoke('worktrees:remove', input),
+    checkoutMain: (input) => ipcRenderer.invoke('worktrees:checkout-main', input)
   },
   clipboard: {
     writeText: (text) => ipcRenderer.invoke('clipboard:write-text', text)
@@ -171,6 +172,10 @@ const api: ElectronApi = {
   tools: {
     checkAll: () => ipcRenderer.invoke('tools:check-all'),
     install: (toolId: string) => ipcRenderer.invoke('tools:install', toolId)
+  },
+  files: {
+    listDirectory: (input) => ipcRenderer.invoke('files:list-directory', input),
+    getGitStatus: (input) => ipcRenderer.invoke('files:git-status', input)
   }
 }
 

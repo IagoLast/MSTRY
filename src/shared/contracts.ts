@@ -30,16 +30,30 @@ export interface WorkspaceItem {
 
 export interface CreateWorktreeInput {
   name: string
+  projectPath?: string
 }
 
 export interface DeleteWorktreeInput {
   path: string
+  projectPath?: string
 }
 
 export interface DeleteWorktreeResult {
   removedPath: string
   removedBranch: string | null
   warning: string | null
+}
+
+export interface ListWorktreesInput {
+  projectPath?: string
+}
+
+export interface CheckoutMainInput {
+  projectPath?: string
+}
+
+export interface CheckoutMainResult {
+  branch: string
 }
 
 export interface CreateTerminalSessionInput {
@@ -134,6 +148,40 @@ export interface GeminiSessionInfo {
   prompt?: string | null
 }
 
+export interface FileEntry {
+  name: string
+  path: string
+  relativePath: string
+  isDirectory: boolean
+}
+
+export type GitFileStatus =
+  | 'untracked'
+  | 'modified'
+  | 'added'
+  | 'deleted'
+  | 'renamed'
+  | 'conflicted'
+  | 'ignored'
+  | 'typechange'
+
+export interface GitFileStatusEntry {
+  relativePath: string
+  status: GitFileStatus
+  staged: boolean
+  added: number
+  deleted: number
+}
+
+export interface ListDirectoryInput {
+  cwd: string
+  relativePath: string
+}
+
+export interface GitStatusInput {
+  cwd: string
+}
+
 export interface ElectronApi {
   workspace: {
     getConfig: () => Promise<AppConfig>
@@ -145,9 +193,10 @@ export interface ElectronApi {
     setDefaultTabCommand: (command: string) => Promise<AppConfig>
   }
   worktrees: {
-    list: () => Promise<WorkspaceItem[]>
+    list: (input?: ListWorktreesInput) => Promise<WorkspaceItem[]>
     create: (input: CreateWorktreeInput) => Promise<WorkspaceItem>
     remove: (input: DeleteWorktreeInput) => Promise<DeleteWorktreeResult>
+    checkoutMain: (input?: CheckoutMainInput) => Promise<CheckoutMainResult>
   }
   clipboard: {
     writeText: (text: string) => Promise<void>
@@ -203,5 +252,9 @@ export interface ElectronApi {
     isInstalled: () => Promise<boolean>
     install: () => Promise<void>
     uninstall: () => Promise<void>
+  }
+  files: {
+    listDirectory: (input: ListDirectoryInput) => Promise<FileEntry[]>
+    getGitStatus: (input: GitStatusInput) => Promise<GitFileStatusEntry[]>
   }
 }

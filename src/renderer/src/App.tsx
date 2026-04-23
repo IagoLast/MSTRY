@@ -45,6 +45,7 @@ import type {
   WorkspaceItem
 } from '../../shared/contracts'
 import { CommandPalette, type CommandItem } from './components/command-palette'
+import { FileExplorer } from './components/file-explorer'
 import { SettingsPanel } from './components/settings-panel'
 import { WorktreeTerminal } from './components/worktree-terminal'
 import { Button } from './components/ui/button'
@@ -223,9 +224,11 @@ export function App() {
   const selectedWorkspacePathRef = useRef<string | null>(selectedWorkspacePath)
   const [agentsCollapsed, setAgentsCollapsed] = useState(false)
   const [agentsCompact, setAgentsCompact] = useState(false)
+  const [filesCollapsed, setFilesCollapsed] = useState(false)
   const [collapsedAgentProjects, setCollapsedAgentProjects] = useState<Set<string>>(new Set())
   const [collapsedAgentWorktrees, setCollapsedAgentWorktrees] = useState<Set<string>>(new Set())
   const [draftWorktreeName, setDraftWorktreeName] = useState<string | null>(null)
+  const [draftWorktreeProjectPath, setDraftWorktreeProjectPath] = useState<string | null>(null)
   const [worktreeMenuProjectPath, setWorktreeMenuProjectPath] = useState<string | null>(null)
   const worktreeMenuRef = useRef<HTMLDivElement>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -282,11 +285,27 @@ export function App() {
     [setSelectedWorkspacePath]
   )
 
-  const workspacesQuery = useQuery({
-    queryKey: ['workspaces', activeProject?.rootPath],
-    queryFn: () => getElectronBridge().worktrees.list(),
-    enabled: Boolean(activeProject?.rootPath)
+  const projectPaths = appConfigQuery.data?.projects.map((project) => project.rootPath) ?? []
+
+  const workspacesByProjectQuery = useQuery({
+    queryKey: ['workspaces', projectPaths],
+    queryFn: async () => {
+      const bridge = getElectronBridge()
+      const entries = await Promise.all(
+        projectPaths.map(async (projectPath) => [
+          projectPath,
+          await bridge.worktrees.list({ projectPath })
+        ] as const)
+      )
+
+      return Object.fromEntries(entries) as Record<string, WorkspaceItem[]>
+    },
+    enabled: projectPaths.length > 0
   })
+
+  const activeWorkspaces = activeProject
+    ? (workspacesByProjectQuery.data?.[activeProject.rootPath] ?? [])
+    : []
 
   const pickProjectMutation = useMutation({
     mutationFn: () => getElectronBridge().workspace.pickPath(),
@@ -305,6 +324,7 @@ export function App() {
     onSuccess: (config) => {
       queryClient.setQueryData(['app-config'], config)
       setDraftWorktreeName(null)
+      setDraftWorktreeProjectPath(null)
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }
   })
@@ -327,22 +347,58 @@ export function App() {
     }
   })
 
+  const focusWorkspace = useCallback(
+    (
+      workspacePath: string,
+      options?: {
+        createNewTab?: boolean
+        projectPath?: string | null
+      }
+    ) => {
+      if (options?.projectPath && options.projectPath !== activeProject?.rootPath) {
+        void selectProjectMutation.mutateAsync(options.projectPath)
+      }
+
+      if (options?.createNewTab) {
+        const tab = createTab(workspacePath, defaultTabCommand)
+        setTabs((current) => [...current, tab])
+        setActiveTabId((current) => ({ ...current, [workspacePath]: tab.id }))
+      } else {
+        const hasTabs = tabsRef.current.some((tab) => tab.workspacePath === workspacePath)
+        if (!hasTabs) {
+          const tab = createTab(workspacePath, defaultTabCommand)
+          setTabs((current) => [...current, tab])
+          setActiveTabId((current) => ({ ...current, [workspacePath]: tab.id }))
+        }
+      }
+
+      setSelectedWorkspacePath(workspacePath)
+    },
+    [activeProject?.rootPath, defaultTabCommand, selectProjectMutation, setSelectedWorkspacePath]
+  )
+
   const createWorktreeMutation = useMutation({
-    mutationFn: (name: string) => getElectronBridge().worktrees.create({ name }),
-    onSuccess: (workspace) => {
+    mutationFn: ({ name, projectPath }: { name: string; projectPath: string | null }) =>
+      getElectronBridge().worktrees.create({
+        name,
+        projectPath: projectPath ?? undefined
+      }),
+    onSuccess: (workspace, variables) => {
       setDraftWorktreeName(null)
-      setSelectedWorkspacePath(workspace.path)
+      setDraftWorktreeProjectPath(null)
+      focusWorkspace(workspace.path, { projectPath: variables.projectPath })
       queryClient.invalidateQueries({ queryKey: ['workspaces'] })
     }
   })
 
   const removeWorktreeMutation = useMutation({
-    mutationFn: (workspacePath: string) => getElectronBridge().worktrees.remove({ path: workspacePath }),
-    onSuccess: (result, workspacePath) => {
+    mutationFn: ({ workspacePath, projectPath }: { workspacePath: string; projectPath: string }) =>
+      getElectronBridge().worktrees.remove({ path: workspacePath, projectPath }),
+    onSuccess: (result, variables) => {
       const bridge = getElectronBridge()
       const removedTabIds = new Set(
         tabsRef.current
-          .filter((tab) => tab.workspacePath === workspacePath)
+          .filter((tab) => tab.workspacePath === variables.workspacePath)
           .map((tab) => {
             if (tab.tmuxSessionName) void bridge.terminal.destroySession(tab.tmuxSessionName)
             return tab.id
@@ -357,8 +413,39 @@ export function App() {
     }
   })
 
+  const checkoutMainMutation = useMutation({
+    mutationFn: (projectPath: string) =>
+      getElectronBridge().worktrees.checkoutMain({ projectPath }),
+    onSuccess: (_result, projectPath) => {
+      focusWorkspace(projectPath, { projectPath })
+      queryClient.invalidateQueries({ queryKey: ['workspaces'] })
+    }
+  })
+
   useEffect(() => {
-    const availableItems = workspacesQuery.data ?? []
+    const projects = appConfigQuery.data?.projects ?? []
+
+    if (!activeProject) {
+      if (selectedWorkspacePath !== null) {
+        setSelectedWorkspacePath(null)
+      }
+      return
+    }
+
+    const selectedOwner = selectedWorkspacePath
+      ? findOwnerProject(projects, selectedWorkspacePath)
+      : null
+
+    if (selectedOwner && selectedOwner.rootPath !== activeProject.rootPath) {
+      setSelectedWorkspacePath(activeProject.rootPath)
+      return
+    }
+
+    if (workspacesByProjectQuery.isPending) {
+      return
+    }
+
+    const availableItems = activeWorkspaces
 
     if (availableItems.length === 0) {
       setSelectedWorkspacePath(null)
@@ -371,7 +458,15 @@ export function App() {
     if (!stillExists) {
       setSelectedWorkspacePath(availableItems[0].path)
     }
-  }, [selectedWorkspacePath, setSelectedWorkspacePath, tabs, workspacesQuery.data])
+  }, [
+    activeProject,
+    activeWorkspaces,
+    appConfigQuery.data?.projects,
+    selectedWorkspacePath,
+    setSelectedWorkspacePath,
+    tabs,
+    workspacesByProjectQuery.isPending
+  ])
 
   useEffect(() => {
     if (!selectedWorkspacePath) {
@@ -506,7 +601,7 @@ export function App() {
 
   const groupedAgents = useMemo(() => {
     const projects = appConfigQuery.data?.projects ?? []
-    const workspaces = workspacesQuery.data ?? []
+    const workspacesByProject = workspacesByProjectQuery.data ?? {}
 
     const tabsByProject = new Map<string, TerminalTab[]>()
     for (const tab of tabs) {
@@ -524,6 +619,7 @@ export function App() {
 
     for (const [projectPath, projectTabs] of tabsByProject) {
       const project = projects.find((p) => p.rootPath === projectPath) ?? null
+      const projectWorkspaces = project ? (workspacesByProject[project.rootPath] ?? []) : []
 
       const tabsByWorkspace = new Map<string, TerminalTab[]>()
       for (const tab of projectTabs) {
@@ -534,7 +630,7 @@ export function App() {
 
       const worktreeGroups: { path: string; label: string; isWorktree: boolean; tabs: TerminalTab[] }[] = []
       for (const [wsPath, wsTabs] of tabsByWorkspace) {
-        const wsData = workspaces.find((w) => w.path === wsPath)
+        const wsData = projectWorkspaces.find((w) => w.path === wsPath)
         let label: string
         if (wsData) {
           label = wsData.branch ?? (wsData.isMain ? 'main' : wsData.name)
@@ -551,7 +647,11 @@ export function App() {
     }
 
     return groups
-  }, [tabs, appConfigQuery.data?.projects, workspacesQuery.data])
+  }, [tabs, appConfigQuery.data?.projects, workspacesByProjectQuery.data])
+
+  const worktreeMenuItems = worktreeMenuProjectPath
+    ? (workspacesByProjectQuery.data?.[worktreeMenuProjectPath] ?? [])
+    : []
 
   const handleToggleMouse = useCallback(() => {
     void getElectronBridge().terminal.toggleMouse()
@@ -591,24 +691,32 @@ export function App() {
   }, [defaultTabCommand, selectedWorkspacePath])
 
   const handleNewTabInMain = useCallback(() => {
-    const mainPath = activeProject?.rootPath
-    if (!mainPath) return
-    const tab = createTab(mainPath, defaultTabCommand)
-    setTabs((current) => [...current, tab])
-    setActiveTabId((current) => ({ ...current, [mainPath]: tab.id }))
-    setSelectedWorkspacePath(mainPath)
-  }, [activeProject?.rootPath, defaultTabCommand, setSelectedWorkspacePath])
+    if (!activeProject) return
+    focusWorkspace(activeProject.rootPath, {
+      createNewTab: true,
+      projectPath: activeProject.rootPath
+    })
+  }, [activeProject, focusWorkspace])
 
-  const handleNavigateToWorktree = useCallback((worktreePath: string) => {
-    const hasTabs = tabsRef.current.some((tab) => tab.workspacePath === worktreePath)
-    if (!hasTabs) {
-      const tab = createTab(worktreePath, defaultTabCommand)
-      setTabs((current) => [...current, tab])
-      setActiveTabId((current) => ({ ...current, [worktreePath]: tab.id }))
-    }
-    setSelectedWorkspacePath(worktreePath)
+  const handleOpenProjectMain = useCallback((project: Project | null, createNewTab = false) => {
+    if (!project) return
+    focusWorkspace(project.rootPath, {
+      createNewTab,
+      projectPath: project.rootPath
+    })
     setWorktreeMenuProjectPath(null)
-  }, [defaultTabCommand, setSelectedWorkspacePath])
+  }, [focusWorkspace])
+
+  const handleNavigateToWorktree = useCallback((projectPath: string, worktreePath: string) => {
+    focusWorkspace(worktreePath, { projectPath })
+    setWorktreeMenuProjectPath(null)
+  }, [focusWorkspace])
+
+  const handleCheckoutMain = useCallback(async (project: Project | null) => {
+    if (!project) return
+    setWorktreeMenuProjectPath(null)
+    await checkoutMainMutation.mutateAsync(project.rootPath)
+  }, [checkoutMainMutation])
 
   const handleNewClaudeTab = useCallback(() => {
     if (!selectedWorkspacePath) return
@@ -702,11 +810,16 @@ export function App() {
   )
 
   const selectedWorkspace = useMemo(
-    () => workspacesQuery.data?.find((item) => item.path === selectedWorkspacePath) ?? null,
-    [selectedWorkspacePath, workspacesQuery.data]
+    () => activeWorkspaces.find((item) => item.path === selectedWorkspacePath) ?? null,
+    [activeWorkspaces, selectedWorkspacePath]
   )
 
-  const isGitProject = activeProject?.mode === 'git'
+  const draftWorktreeProject = useMemo(
+    () =>
+      appConfigQuery.data?.projects.find((project) => project.rootPath === draftWorktreeProjectPath) ??
+      null,
+    [appConfigQuery.data?.projects, draftWorktreeProjectPath]
+  )
   const configErrorMessage = appConfigQuery.isError
     ? getErrorMessage(appConfigQuery.error)
     : pickProjectMutation.isError
@@ -717,13 +830,15 @@ export function App() {
           ? getErrorMessage(removeProjectMutation.error)
           : null
 
-  const worktreeErrorMessage = workspacesQuery.isError
-    ? getErrorMessage(workspacesQuery.error)
+  const worktreeErrorMessage = workspacesByProjectQuery.isError
+    ? getErrorMessage(workspacesByProjectQuery.error)
     : createWorktreeMutation.isError
       ? getErrorMessage(createWorktreeMutation.error)
       : removeWorktreeMutation.isError
         ? getErrorMessage(removeWorktreeMutation.error)
-        : null
+        : checkoutMainMutation.isError
+          ? getErrorMessage(checkoutMainMutation.error)
+          : null
 
 
   const handleRefresh = () => {
@@ -785,7 +900,16 @@ export function App() {
         id: 'new-worktree',
         label: 'Crear worktree',
         icon: <VscSourceControl className="size-4" />,
-        onSelect: () => setDraftWorktreeName((c) => (c !== null ? null : generateRandomWorktreeName()))
+        onSelect: () => {
+          if (draftWorktreeName !== null) {
+            setDraftWorktreeName(null)
+            setDraftWorktreeProjectPath(null)
+            return
+          }
+
+          setDraftWorktreeProjectPath(activeProject?.rootPath ?? null)
+          setDraftWorktreeName(generateRandomWorktreeName())
+        }
       },
       {
         id: 'new-tab-main',
@@ -806,7 +930,21 @@ export function App() {
         onSelect: () => handleToggleMouse()
       }
     ],
-    [handleNewTab, handleNewClaudeTab, handleNewTabInMain, handleCloseTab, currentActiveTabId, handleRefresh, pickProjectMutation, sidebarOpen, toggleSidebar, mouseMode, handleToggleMouse]
+    [
+      activeProject?.rootPath,
+      currentActiveTabId,
+      draftWorktreeName,
+      handleCloseTab,
+      handleNewClaudeTab,
+      handleNewTab,
+      handleNewTabInMain,
+      handleRefresh,
+      handleToggleMouse,
+      mouseMode,
+      pickProjectMutation,
+      sidebarOpen,
+      toggleSidebar
+    ]
   )
 
   useHotkeys(
@@ -850,7 +988,10 @@ export function App() {
   const handleCreateWorktree = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (!draftWorktreeName) return
-    await createWorktreeMutation.mutateAsync(draftWorktreeName)
+    await createWorktreeMutation.mutateAsync({
+      name: draftWorktreeName,
+      projectPath: draftWorktreeProjectPath ?? activeProject?.rootPath ?? null
+    })
   }
 
   const handleDeleteProject = async (project: Project) => {
@@ -861,7 +1002,7 @@ export function App() {
     await removeProjectMutation.mutateAsync(project)
   }
 
-  const handleDeleteWorktree = async (workspace: WorkspaceItem) => {
+  const handleDeleteWorktree = async (workspace: WorkspaceItem, projectPath: string) => {
     const targetName = workspace.branch ?? workspace.name
     const branchWarning = workspace.branch
       ? `Tambien se borrara la rama local ${workspace.branch}.`
@@ -875,7 +1016,10 @@ export function App() {
       return
     }
 
-    await removeWorktreeMutation.mutateAsync(workspace.path)
+    await removeWorktreeMutation.mutateAsync({
+      workspacePath: workspace.path,
+      projectPath
+    })
   }
 
   return (
@@ -923,7 +1067,7 @@ export function App() {
             </div>
           ) : null}
 
-          {draftWorktreeName !== null && isGitProject ? (
+          {draftWorktreeName !== null && draftWorktreeProject?.mode === 'git' ? (
             <div className="border-b px-3 py-3">
               <form className="flex items-center gap-2" onSubmit={handleCreateWorktree}>
                 <Input
@@ -944,7 +1088,10 @@ export function App() {
                   size="sm"
                   variant="ghost"
                   type="button"
-                  onClick={() => setDraftWorktreeName(null)}
+                  onClick={() => {
+                    setDraftWorktreeName(null)
+                    setDraftWorktreeProjectPath(null)
+                  }}
                 >
                   <VscClose className="size-3.5" />
                 </Button>
@@ -1145,19 +1292,9 @@ export function App() {
                         size="icon"
                         variant="ghost"
                         className="size-5 shrink-0 rounded opacity-0 group-hover:opacity-100"
-                        onClick={() => {
-                          const mainPath = group.project?.rootPath
-                          if (!mainPath) return
-                          const hasTabs = tabsRef.current.some((tab) => tab.workspacePath === mainPath)
-                          if (!hasTabs) {
-                            const tab = createTab(mainPath, defaultTabCommand)
-                            setTabs((current) => [...current, tab])
-                            setActiveTabId((current) => ({ ...current, [mainPath]: tab.id }))
-                          }
-                          setSelectedWorkspacePath(mainPath)
-                        }}
-                        aria-label="Abrir terminal en main"
-                        title="Abrir terminal en main"
+                        onClick={() => void handleCheckoutMain(group.project)}
+                        aria-label="Checkout rama principal"
+                        title="Checkout rama principal"
                       >
                         <VscTerminalBash className="size-3.5" />
                       </Button>
@@ -1176,7 +1313,22 @@ export function App() {
                           </Button>
                           {worktreeMenuProjectPath === group.projectPath ? (
                             <div className="absolute right-0 top-full z-50 mt-1 min-w-[200px] max-w-[300px] rounded-md border border-border bg-sidebar py-1 shadow-lg">
-                              {(workspacesQuery.data ?? []).filter((ws) => ws.kind === 'worktree' && !ws.isMain).map((ws) => (
+                              <button
+                                type="button"
+                                className={cn(
+                                  'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-item-hover',
+                                  selectedWorkspacePath === group.project?.rootPath ? 'text-foreground' : 'text-secondary'
+                                )}
+                                onClick={() => handleOpenProjectMain(group.project)}
+                              >
+                                <VscTerminalBash className="size-3 shrink-0" />
+                                <span className="truncate">Abrir terminal en main</span>
+                                {selectedWorkspacePath === group.project?.rootPath ? (
+                                  <VscCheck className="ml-auto size-3 shrink-0" />
+                                ) : null}
+                              </button>
+                              <div className="mx-2 my-1 border-t border-border" />
+                              {worktreeMenuItems.filter((ws) => ws.kind === 'worktree' && !ws.isMain).map((ws) => (
                                 <button
                                   key={ws.path}
                                   type="button"
@@ -1184,7 +1336,7 @@ export function App() {
                                     'flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-item-hover',
                                     selectedWorkspacePath === ws.path ? 'text-foreground' : 'text-secondary'
                                   )}
-                                  onClick={() => handleNavigateToWorktree(ws.path)}
+                                  onClick={() => handleNavigateToWorktree(group.projectPath, ws.path)}
                                 >
                                   <VscSourceControl className="size-3 shrink-0" />
                                   <span className="truncate">{ws.branch ?? ws.name}</span>
@@ -1193,7 +1345,7 @@ export function App() {
                                   ) : null}
                                 </button>
                               ))}
-                              {(workspacesQuery.data ?? []).some((ws) => ws.kind === 'worktree' && !ws.isMain) ? (
+                              {worktreeMenuItems.some((ws) => ws.kind === 'worktree' && !ws.isMain) ? (
                                 <div className="mx-2 my-1 border-t border-border" />
                               ) : null}
                               <button
@@ -1201,7 +1353,14 @@ export function App() {
                                 className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-secondary hover:bg-item-hover"
                                 onClick={() => {
                                   setWorktreeMenuProjectPath(null)
-                                  setDraftWorktreeName((c) => (c !== null ? null : generateRandomWorktreeName()))
+                                  if (draftWorktreeName !== null) {
+                                    setDraftWorktreeName(null)
+                                    setDraftWorktreeProjectPath(null)
+                                    return
+                                  }
+
+                                  setDraftWorktreeProjectPath(group.projectPath)
+                                  setDraftWorktreeName(generateRandomWorktreeName())
                                 }}
                               >
                                 <VscAdd className="size-3 shrink-0" />
@@ -1273,12 +1432,12 @@ export function App() {
                             size="icon"
                             variant="ghost"
                             className="size-5 shrink-0 rounded opacity-0 group-hover:opacity-100"
-                            onClick={() => {
-                              const tab = createTab(wt.path, defaultTabCommand)
-                              setTabs((current) => [...current, tab])
-                              setActiveTabId((current) => ({ ...current, [wt.path]: tab.id }))
-                              setSelectedWorkspacePath(wt.path)
-                            }}
+                            onClick={() =>
+                              focusWorkspace(wt.path, {
+                                createNewTab: true,
+                                projectPath: group.project?.rootPath ?? null
+                              })
+                            }
                             aria-label="Nuevo agente"
                             title="Nuevo agente"
                           >
@@ -1286,14 +1445,18 @@ export function App() {
                           </Button>
 
                           {(() => {
-                            const wsData = (workspacesQuery.data ?? []).find((w) => w.path === wt.path)
+                            const wsData = group.project
+                              ? (workspacesByProjectQuery.data?.[group.project.rootPath] ?? []).find(
+                                  (w) => w.path === wt.path
+                                )
+                              : null
                             const canDelete = wsData?.kind === 'worktree' && !wsData.isMain
                             return canDelete && wsData ? (
                               <Button
                                 size="icon"
                                 variant="ghost"
                                 className="size-5 shrink-0 rounded text-muted hover:text-destructive"
-                                onClick={() => void handleDeleteWorktree(wsData)}
+                                onClick={() => group.project && void handleDeleteWorktree(wsData, group.project.rootPath)}
                                 aria-label={`Borrar worktree ${wt.label}`}
                                 title="Borrar worktree"
                               >
@@ -1460,6 +1623,12 @@ export function App() {
               </div>
             </ScrollArea>
           ) : null}
+
+          <FileExplorer
+            workspacePath={selectedWorkspacePath}
+            collapsed={filesCollapsed}
+            onToggleCollapsed={() => setFilesCollapsed((c) => !c)}
+          />
         </aside>
 
         <main className="flex min-w-0 flex-1 flex-col bg-surface">
