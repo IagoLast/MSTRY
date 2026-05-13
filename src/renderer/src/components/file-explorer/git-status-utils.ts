@@ -1,15 +1,29 @@
 import type { GitFileStatus, GitFileStatusEntry } from '../../../../shared/contracts'
 
 export const statusColorClass: Record<GitFileStatus, string> = {
-  untracked: 'text-green-500',
-  added: 'text-green-500',
-  modified: 'text-yellow-500',
-  typechange: 'text-yellow-500',
-  deleted: 'text-red-500',
-  renamed: 'text-blue-500',
-  conflicted: 'text-orange-500',
+  untracked: 'text-[color:var(--git-added-fg)]',
+  added: 'text-[color:var(--git-added-fg)]',
+  modified: 'text-[color:var(--git-modified-fg)]',
+  typechange: 'text-[color:var(--git-modified-fg)]',
+  deleted: 'text-[color:var(--git-deleted-fg)]',
+  renamed: 'text-[color:var(--git-renamed-fg)]',
+  conflicted: 'text-[color:var(--git-conflicted-fg)]',
   ignored: 'text-muted'
 }
+
+export const statusTreeRowClass: Record<GitFileStatus, string> = {
+  untracked: 'git-change-row git-change-row--added',
+  added: 'git-change-row git-change-row--added',
+  modified: 'git-change-row git-change-row--modified',
+  typechange: 'git-change-row git-change-row--modified',
+  deleted: 'git-change-row git-change-row--deleted',
+  renamed: 'git-change-row git-change-row--renamed',
+  conflicted: 'git-change-row git-change-row--conflicted',
+  ignored: ''
+}
+
+export const directoryStatusColorClass = 'text-[color:var(--git-directory-fg)]'
+export const directoryTreeRowClass = 'git-change-row git-change-row--directory'
 
 export const statusLetter: Record<GitFileStatus, string> = {
   untracked: 'U',

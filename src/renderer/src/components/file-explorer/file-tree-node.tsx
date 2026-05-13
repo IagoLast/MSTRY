@@ -9,7 +9,14 @@ import {
 import type { FileEntry } from '../../../../shared/contracts'
 import { cn } from '../../lib/utils'
 import { GitDiffStats } from './git-diff-stats'
-import { statusColorClass, statusLetter, type StatusIndex } from './git-status-utils'
+import {
+  directoryStatusColorClass,
+  directoryTreeRowClass,
+  statusColorClass,
+  statusLetter,
+  statusTreeRowClass,
+  type StatusIndex
+} from './git-status-utils'
 import { useDirectory } from './use-directory'
 
 interface Props {
@@ -44,14 +51,20 @@ export function FileTreeNode({
   const dirAggregate = entry.isDirectory
     ? statusIndex.dirIndex.get(entry.relativePath) ?? null
     : null
+  const hasDirectoryChanges = Boolean(dirAggregate && dirAggregate.changedCount > 0)
 
   const isSelected = !entry.isDirectory && entry.path === selectedFilePath
   const rowColor = fileStatus
     ? statusColorClass[fileStatus.status]
-    : dirAggregate && dirAggregate.changedCount > 0
-      ? 'text-foreground'
+    : hasDirectoryChanges
+      ? directoryStatusColorClass
       : 'text-secondary'
   const rowStateClass = isSelected ? 'bg-item-active text-foreground' : rowColor
+  const gitRowClass = fileStatus
+    ? statusTreeRowClass[fileStatus.status]
+    : hasDirectoryChanges
+      ? directoryTreeRowClass
+      : null
 
   const showDirStats = entry.isDirectory && !isExpanded && dirAggregate
   const statsAdded = fileStatus?.added ?? (showDirStats ? dirAggregate!.added : 0)
@@ -73,7 +86,8 @@ export function FileTreeNode({
         onClick={handleClick}
         style={{ paddingLeft: `${depth * 12 + 8}px` }}
         className={cn(
-          'group flex w-full min-w-0 items-center gap-1.5 py-0.5 pr-2 text-left text-sm hover:bg-item-hover',
+          'group flex w-full min-w-0 items-center gap-1.5 border-l-2 border-transparent py-0.5 pr-2 text-left text-sm hover:bg-item-hover',
+          gitRowClass,
           rowStateClass,
           fileStatus?.status === 'deleted' && 'line-through opacity-80',
           fileStatus?.status === 'ignored' && 'opacity-60'
@@ -92,12 +106,27 @@ export function FileTreeNode({
 
         {entry.isDirectory ? (
           isExpanded ? (
-            <VscFolderOpened className="size-3.5 shrink-0 text-icon" />
+            <VscFolderOpened
+              className={cn(
+                'size-3.5 shrink-0',
+                hasDirectoryChanges ? directoryStatusColorClass : 'text-icon'
+              )}
+            />
           ) : (
-            <VscFolder className="size-3.5 shrink-0 text-icon" />
+            <VscFolder
+              className={cn(
+                'size-3.5 shrink-0',
+                hasDirectoryChanges ? directoryStatusColorClass : 'text-icon'
+              )}
+            />
           )
         ) : (
-          <VscFile className="size-3.5 shrink-0 text-icon" />
+          <VscFile
+            className={cn(
+              'size-3.5 shrink-0',
+              fileStatus ? statusColorClass[fileStatus.status] : 'text-icon'
+            )}
+          />
         )}
 
         <span className="min-w-0 truncate">{entry.name}</span>

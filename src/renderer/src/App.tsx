@@ -20,7 +20,7 @@ import {
   VscTerminalBash,
   VscTrash
 } from 'react-icons/vsc'
-import { BsClaude } from 'react-icons/bs'
+import { SiClaude, SiOpenai } from 'react-icons/si'
 import {
   DndContext,
   PointerSensor,
@@ -37,6 +37,7 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 
 import type {
+  AgentProcessKind,
   AppConfig,
   ClaudeSessionInfo,
   CodexSessionInfo,
@@ -44,6 +45,7 @@ import type {
   OpenCodeSessionInfo,
   PersistedTab,
   Project,
+  TerminalProcessState,
   WorkspaceItem
 } from '../../shared/contracts'
 import { CommandPalette, type CommandItem } from './components/command-palette'
@@ -68,6 +70,8 @@ interface TerminalTab {
   sessionId: string | null
   pid: number | null
   processName: string | null
+  processAgent: AgentProcessKind | null
+  processState: TerminalProcessState
 }
 
 interface EditorTab {
@@ -112,7 +116,9 @@ const createTab = (workspacePath: string, initialCommand?: string): TerminalTab 
   tmuxSessionName: null,
   sessionId: null,
   pid: null,
-  processName: null
+  processName: null,
+  processAgent: null,
+  processState: 'inactive'
 })
 
 const createRestoredTab = (persisted: PersistedTab): TerminalTab => ({
@@ -122,7 +128,9 @@ const createRestoredTab = (persisted: PersistedTab): TerminalTab => ({
   tmuxSessionName: persisted.tmuxSessionName,
   sessionId: null,
   pid: null,
-  processName: null
+  processName: null,
+  processAgent: null,
+  processState: 'inactive'
 })
 
 const createEditorTab = (workspacePath: string, filePath: string): EditorTab => ({
@@ -201,6 +209,85 @@ const isCodexProcess = (name: string | null) =>
 
 const isOpenCodeProcess = (name: string | null) =>
   name != null && /\bopencode\b/i.test(name)
+
+const getProcessAgentKind = (tab: TerminalTab): AgentProcessKind | null => {
+  if (tab.processAgent) return tab.processAgent
+  if (isClaudeProcess(tab.processName)) return 'claude'
+  if (isCodexProcess(tab.processName)) return 'codex'
+  if (isOpenCodeProcess(tab.processName)) return 'opencode'
+  return null
+}
+
+const getAgentDisplayName = (agent: AgentProcessKind) => {
+  if (agent === 'claude') return 'Claude'
+  if (agent === 'codex') return 'Codex'
+  if (agent === 'opencode') return 'OpenCode'
+  return 'Gemini'
+}
+
+const getAgentState = (
+  status: 'working' | 'idle' | undefined,
+  processState: TerminalProcessState
+): TerminalProcessState | null => {
+  if (status === 'working') return 'active'
+  if (status === 'idle') return 'inactive'
+  if (processState === 'active') return 'active'
+  return null
+}
+
+const getAgentColorClass = (state: TerminalProcessState | null) => {
+  if (state === 'active') return 'text-green-400'
+  if (state === 'inactive') return 'text-red-400'
+  return 'text-icon'
+}
+
+const getTerminalAgent = (
+  tab: TerminalTab,
+  claudeSessions: ClaudeSessionInfo[],
+  codexSessions: CodexSessionInfo[]
+) => {
+  const claudeInfo = tab.pid
+    ? claudeSessions.find((s) => s.shellPid === tab.pid) ?? null
+    : null
+  const codexInfo = tab.pid
+    ? codexSessions.find((s) => s.shellPid === tab.pid) ?? null
+    : null
+  const processAgent = getProcessAgentKind(tab)
+  const agent = codexInfo ? 'codex' : claudeInfo ? 'claude' : processAgent
+  const info = agent === 'codex' ? codexInfo : agent === 'claude' ? claudeInfo : null
+  const state = getAgentState(info?.status, tab.processState)
+
+  return {
+    agent,
+    info,
+    state,
+    prompt: info?.prompt ?? null
+  }
+}
+
+function AgentIcon({
+  agent,
+  state,
+  className
+}: {
+  agent: AgentProcessKind
+  state: TerminalProcessState | null
+  className: string
+}) {
+  if (agent === 'claude') {
+    return <SiClaude className={cn(className, getAgentColorClass(state))} />
+  }
+
+  if (agent === 'codex') {
+    return <SiOpenai className={cn(className, getAgentColorClass(state))} />
+  }
+
+  return (
+    <span className={cn('flex items-center justify-center text-[10px] font-bold leading-none', className, getAgentColorClass(state))}>
+      {agent === 'opencode' ? 'O' : 'G'}
+    </span>
+  )
+}
 
 const selectedWorkspaceQueryKey = ['ui', 'selected-workspace'] as const
 
@@ -294,6 +381,11 @@ export function App() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const [quickOpenOpen, setQuickOpenOpen] = useState(false)
   const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarWidth, setSidebarWidth] = useState<number>(() => {
+    const stored = typeof window !== 'undefined' ? window.localStorage.getItem('electree:sidebar-width') : null
+    const parsed = stored ? Number.parseInt(stored, 10) : Number.NaN
+    return Number.isFinite(parsed) ? Math.min(Math.max(parsed, 200), 800) : 400
+  })
   const [mouseMode, setMouseMode] = useState(false)
   const [customTabNames, setCustomTabNames] = useState<Record<string, string>>({})
   const [editingTabId, setEditingTabId] = useState<string | null>(null)
@@ -510,6 +602,8 @@ export function App() {
   })
 
   useEffect(() => {
+    if (selectProjectMutation.isPending) return
+
     const projects = appConfigQuery.data?.projects ?? []
 
     if (!activeProject) {
@@ -549,6 +643,7 @@ export function App() {
     activeProject,
     activeWorkspaces,
     appConfigQuery.data?.projects,
+    selectProjectMutation.isPending,
     selectedWorkspacePath,
     setSelectedWorkspacePath,
     tabs,
@@ -574,7 +669,12 @@ export function App() {
       setTabs((current) =>
         current.map((tab) =>
           tab.kind === 'terminal' && tab.sessionId === event.sessionId
-            ? { ...tab, processName: event.processName }
+            ? {
+                ...tab,
+                processName: event.processName,
+                processAgent: event.processAgent,
+                processState: event.processState
+              }
             : tab
         )
       )
@@ -699,47 +799,78 @@ export function App() {
     const projects = appConfigQuery.data?.projects ?? []
     const workspacesByProject = workspacesByProjectQuery.data ?? {}
 
-    const tabsByProject = new Map<string, TerminalTab[]>()
+    // Index tabs by workspace, preserving terminalTabs order within each workspace
+    // so drag-to-reorder keeps working inside a worktree.
+    const tabsByWorkspace = new Map<string, TerminalTab[]>()
+    const ownerProjectForTab = new Map<string, Project | null>()
     for (const tab of terminalTabs) {
-      const ownerProject = findOwnerProject(projects, tab.workspacePath)
-      const projectPath = ownerProject?.rootPath ?? '__orphan__'
-      if (!tabsByProject.has(projectPath)) tabsByProject.set(projectPath, [])
-      tabsByProject.get(projectPath)!.push(tab)
+      if (!tabsByWorkspace.has(tab.workspacePath)) tabsByWorkspace.set(tab.workspacePath, [])
+      tabsByWorkspace.get(tab.workspacePath)!.push(tab)
+      ownerProjectForTab.set(tab.id, findOwnerProject(projects, tab.workspacePath))
     }
+
+    type WorktreeGroup = { path: string; label: string; isWorktree: boolean; wsData: WorkspaceItem | null; tabs: TerminalTab[] }
 
     const groups: {
       project: Project | null
       projectPath: string
-      worktrees: { path: string; label: string; isWorktree: boolean; tabs: TerminalTab[] }[]
+      worktrees: WorktreeGroup[]
     }[] = []
 
-    for (const [projectPath, projectTabs] of tabsByProject) {
-      const project = projects.find((p) => p.rootPath === projectPath) ?? null
-      const projectWorkspaces = project ? (workspacesByProject[project.rootPath] ?? []) : []
+    const consumedWorkspaces = new Set<string>()
 
-      const tabsByWorkspace = new Map<string, TerminalTab[]>()
-      for (const tab of projectTabs) {
-        if (!tabsByWorkspace.has(tab.workspacePath))
-          tabsByWorkspace.set(tab.workspacePath, [])
-        tabsByWorkspace.get(tab.workspacePath)!.push(tab)
+    // Iterate projects in configured order (stable), then workspaces in the order
+    // returned by git (stable: main first, then worktrees).
+    for (const project of projects) {
+      const projectWorkspaces = workspacesByProject[project.rootPath] ?? []
+      const worktreeGroups: WorktreeGroup[] = []
+
+      for (const wsData of projectWorkspaces) {
+        const wsTabs = tabsByWorkspace.get(wsData.path)
+        if (!wsTabs || wsTabs.length === 0) continue
+        consumedWorkspaces.add(wsData.path)
+        const label = wsData.branch ?? (wsData.isMain ? 'main' : wsData.name)
+        const isWorktree = wsData.kind === 'worktree' && !wsData.isMain
+        worktreeGroups.push({ path: wsData.path, label, isWorktree, wsData, tabs: wsTabs })
       }
 
-      const worktreeGroups: { path: string; label: string; isWorktree: boolean; tabs: TerminalTab[] }[] = []
-      for (const [wsPath, wsTabs] of tabsByWorkspace) {
-        const wsData = projectWorkspaces.find((w) => w.path === wsPath)
-        let label: string
-        if (wsData) {
-          label = wsData.branch ?? (wsData.isMain ? 'main' : wsData.name)
-        } else if (project && wsPath === project.rootPath) {
-          label = 'main'
-        } else {
-          label = wsPath.split('/').pop() ?? 'workspace'
-        }
-        const isWorktree = wsData?.kind === 'worktree' && !wsData.isMain
-        worktreeGroups.push({ path: wsPath, label, isWorktree, tabs: wsTabs })
+      // Fallback: tabs whose workspace belongs to this project but isn't in the
+      // workspaces list (e.g., deleted worktree still has live tabs). Sort by
+      // path so the fallback order is also stable.
+      const unresolvedPaths: string[] = []
+      for (const tab of terminalTabs) {
+        if (ownerProjectForTab.get(tab.id)?.rootPath !== project.rootPath) continue
+        if (consumedWorkspaces.has(tab.workspacePath)) continue
+        if (!unresolvedPaths.includes(tab.workspacePath)) unresolvedPaths.push(tab.workspacePath)
+      }
+      unresolvedPaths.sort()
+      for (const wsPath of unresolvedPaths) {
+        consumedWorkspaces.add(wsPath)
+        const label = wsPath === project.rootPath ? 'main' : wsPath.split('/').pop() ?? 'workspace'
+        worktreeGroups.push({ path: wsPath, label, isWorktree: false, wsData: null, tabs: tabsByWorkspace.get(wsPath)! })
       }
 
-      groups.push({ project, projectPath, worktrees: worktreeGroups })
+      if (worktreeGroups.length === 0) continue
+      groups.push({ project, projectPath: project.rootPath, worktrees: worktreeGroups })
+    }
+
+    // Orphan tabs (no owning project). Grouped by workspace, sorted by path.
+    const orphanPaths: string[] = []
+    for (const tab of terminalTabs) {
+      if (ownerProjectForTab.get(tab.id) !== null) continue
+      if (consumedWorkspaces.has(tab.workspacePath)) continue
+      if (!orphanPaths.includes(tab.workspacePath)) orphanPaths.push(tab.workspacePath)
+    }
+    if (orphanPaths.length > 0) {
+      orphanPaths.sort()
+      const worktreeGroups: WorktreeGroup[] = orphanPaths.map((wsPath) => ({
+        path: wsPath,
+        label: wsPath.split('/').pop() ?? 'workspace',
+        isWorktree: false,
+        wsData: null,
+        tabs: tabsByWorkspace.get(wsPath)!
+      }))
+      groups.push({ project: null, projectPath: '__orphan__', worktrees: worktreeGroups })
     }
 
     return groups
@@ -1188,6 +1319,33 @@ export function App() {
     setSidebarOpen((open) => !open)
   }, [])
 
+  useEffect(() => {
+    window.localStorage.setItem('electree:sidebar-width', String(sidebarWidth))
+  }, [sidebarWidth])
+
+  const handleSidebarResizeStart = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidth = sidebarWidth
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const next = Math.min(Math.max(startWidth + (moveEvent.clientX - startX), 200), 800)
+      setSidebarWidth(next)
+    }
+
+    const handleMouseUp = () => {
+      document.removeEventListener('mousemove', handleMouseMove)
+      document.removeEventListener('mouseup', handleMouseUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+
+    document.addEventListener('mousemove', handleMouseMove)
+    document.addEventListener('mouseup', handleMouseUp)
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }, [sidebarWidth])
+
   const quickOpenCommands = useMemo<CommandItem[]>(
     () =>
       (quickOpenFilesQuery.data ?? []).map((filePath) => ({
@@ -1427,7 +1585,8 @@ export function App() {
     <div className="min-h-screen bg-background text-foreground">
       <div className="flex h-screen overflow-hidden">
         <aside
-          className={cn('flex shrink-0 flex-col overflow-hidden bg-sidebar', sidebarOpen ? 'w-[400px] border-r' : 'w-0 border-r-0')}
+          style={sidebarOpen ? { width: sidebarWidth } : undefined}
+          className={cn('relative flex shrink-0 flex-col overflow-hidden bg-sidebar', sidebarOpen ? 'border-r' : 'w-0 border-r-0')}
         >
           {/* Drag region for macOS traffic lights */}
           <div className="drag-region h-11 shrink-0 border-b pl-[78px]">
@@ -1558,23 +1717,13 @@ export function App() {
                     {groupedAgents.flatMap((group) =>
                       group.worktrees.flatMap((wt) =>
                         wt.tabs.map((tab) => {
-                          const claudeInfo = tab.pid
-                            ? claudeSessions.find((s) => s.shellPid === tab.pid) ?? null
-                            : null
-                          const codexInfo = tab.pid
-                            ? codexSessions.find((s) => s.shellPid === tab.pid) ?? null
-                            : null
-                          const isClaude = claudeInfo !== null || isClaudeProcess(tab.processName)
-                          const isCodex = codexInfo !== null || isCodexProcess(tab.processName)
-                          const isOpenCode = isOpenCodeProcess(tab.processName)
-                          const isAgent = isClaude || isCodex || isOpenCode
+                          const tabAgent = getTerminalAgent(tab, claudeSessions, codexSessions)
+                          const isAgent = tabAgent.agent !== null
                           const isActive =
                             selectedWorkspacePath === tab.workspacePath &&
                             activeTabId[tab.workspacePath] === tab.id
-                          const agentInfo = isCodex ? codexInfo : claudeInfo
-                          const agentPrompt = (agentInfo as ClaudeSessionInfo | CodexSessionInfo | null)?.prompt
                           const defaultLabel = isAgent
-                            ? (agentInfo?.name ?? agentPrompt ?? (isOpenCode ? 'OpenCode' : isCodex ? 'Codex' : 'Claude'))
+                            ? (tabAgent.info?.name ?? tabAgent.prompt ?? getAgentDisplayName(tabAgent.agent!))
                             : 'Terminal'
                           const label = customTabNames[tab.id] || defaultLabel
                           const projectName = group.project?.name ?? 'Unknown'
@@ -1589,36 +1738,18 @@ export function App() {
                               )}
                             >
                               <span className="relative flex size-4 shrink-0 items-center justify-center text-icon">
-                                {isAgent ? (
-                                  isClaude ? (
-                                    <BsClaude
-                                      className={cn(
-                                        'size-3',
-                                        agentInfo?.status === 'working' && 'text-green-400',
-                                        agentInfo?.status === 'idle' && 'text-red-400'
-                                      )}
-                                    />
-                                  ) : (
-                                    <span
-                                      className={cn(
-                                        'text-[10px] font-bold',
-                                        agentInfo?.status === 'working' && 'text-green-400',
-                                        agentInfo?.status === 'idle' && 'text-red-400'
-                                      )}
-                                    >
-                                      {isOpenCode ? 'O' : 'C'}
-                                    </span>
-                                  )
+                                {tabAgent.agent ? (
+                                  <AgentIcon agent={tabAgent.agent} state={tabAgent.state} className="size-3" />
                                 ) : (
                                   <VscTerminalBash className="size-3.5" />
                                 )}
-                                {isAgent && agentInfo ? (
+                                {tabAgent.agent && tabAgent.state ? (
                                   <span
                                     className={cn(
                                       'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-sidebar',
-                                      agentInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
+                                      tabAgent.state === 'active' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
                                     )}
-                                    title={agentInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                                    title={tabAgent.state === 'active' ? 'Active' : 'Inactive'}
                                   />
                                 ) : null}
                               </span>
@@ -1845,49 +1976,31 @@ export function App() {
                             <VscAdd className="size-3.5" />
                           </Button>
 
-                          {(() => {
-                            const wsData = group.project
-                              ? (workspacesByProjectQuery.data?.[group.project.rootPath] ?? []).find(
-                                  (w) => w.path === wt.path
-                                )
-                              : null
-                            const canDelete = wsData?.kind === 'worktree' && !wsData.isMain
-                            return canDelete && wsData ? (
+                          {wt.wsData && wt.isWorktree ? (
                               <Button
                                 size="icon"
                                 variant="ghost"
                                 className="size-5 shrink-0 rounded text-muted hover:text-destructive"
-                                onClick={() => group.project && void handleDeleteWorktree(wsData, group.project.rootPath)}
+                                onClick={() => group.project && void handleDeleteWorktree(wt.wsData!, group.project.rootPath)}
                                 aria-label={`Delete worktree ${wt.label}`}
                                 title="Delete worktree"
                               >
                                 <VscTrash className="size-3.5" />
                               </Button>
-                            ) : null
-                          })()}
+                          ) : null}
                         </div>
 
                         {!isWtCollapsed && (
                           <DndContext key={wt.path} sensors={dndSensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                             <SortableContext items={wt.tabs.map((t) => t.id)} strategy={verticalListSortingStrategy}>
                         {wt.tabs.map((tab) => {
-                          const claudeInfo = tab.pid
-                            ? claudeSessions.find((s) => s.shellPid === tab.pid) ?? null
-                            : null
-                          const codexInfo = tab.pid
-                            ? codexSessions.find((s) => s.shellPid === tab.pid) ?? null
-                            : null
-                          const isClaude = claudeInfo !== null || isClaudeProcess(tab.processName)
-                          const isCodex = codexInfo !== null || isCodexProcess(tab.processName)
-                          const isOpenCode = isOpenCodeProcess(tab.processName)
-                          const isAgent = isClaude || isCodex || isOpenCode
+                          const tabAgent = getTerminalAgent(tab, claudeSessions, codexSessions)
+                          const isAgent = tabAgent.agent !== null
                           const isActive =
                             selectedWorkspacePath === tab.workspacePath &&
                             activeTabId[tab.workspacePath] === tab.id
-                          const agentInfo = isCodex ? codexInfo : claudeInfo
-                          const agentPrompt = (agentInfo as ClaudeSessionInfo | CodexSessionInfo | null)?.prompt
                           const defaultLabel = isAgent
-                            ? (agentInfo?.name ?? agentPrompt ?? (isOpenCode ? 'OpenCode' : isCodex ? 'Codex' : 'Claude'))
+                            ? (tabAgent.info?.name ?? tabAgent.prompt ?? getAgentDisplayName(tabAgent.agent!))
                             : 'Terminal'
                           const label = customTabNames[tab.id] || defaultLabel
 
@@ -1902,36 +2015,18 @@ export function App() {
                               )}
                             >
                               <span className="relative flex size-4 shrink-0 items-center justify-center text-icon">
-                                {isAgent ? (
-                                  isClaude ? (
-                                    <BsClaude
-                                      className={cn(
-                                        'size-3',
-                                        agentInfo?.status === 'working' && 'text-green-400',
-                                        agentInfo?.status === 'idle' && 'text-red-400'
-                                      )}
-                                    />
-                                  ) : (
-                                    <span
-                                      className={cn(
-                                        'text-[10px] font-bold',
-                                        agentInfo?.status === 'working' && 'text-green-400',
-                                        agentInfo?.status === 'idle' && 'text-red-400'
-                                      )}
-                                    >
-                                      {isOpenCode ? 'O' : 'C'}
-                                    </span>
-                                  )
+                                {tabAgent.agent ? (
+                                  <AgentIcon agent={tabAgent.agent} state={tabAgent.state} className="size-3" />
                                 ) : (
                                   <VscTerminalBash className="size-3.5" />
                                 )}
-                                {isAgent && agentInfo ? (
+                                {tabAgent.agent && tabAgent.state ? (
                                   <span
                                     className={cn(
                                       'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-sidebar',
-                                      agentInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
+                                      tabAgent.state === 'active' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
                                     )}
-                                    title={agentInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                                    title={tabAgent.state === 'active' ? 'Active' : 'Inactive'}
                                   />
                                 ) : null}
                               </span>
@@ -2042,6 +2137,16 @@ export function App() {
             onRefresh={() => queryClient.invalidateQueries({ queryKey: ['files', 'git-status', selectedWorkspacePath] })}
             onSelectFile={handleSelectGitFile}
           />
+
+          {sidebarOpen ? (
+            <div
+              onMouseDown={handleSidebarResizeStart}
+              className="absolute inset-y-0 right-0 z-10 w-1 cursor-col-resize bg-transparent hover:bg-item-active"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize sidebar"
+            />
+          ) : null}
         </aside>
 
         <main className="flex min-w-0 flex-1 flex-col bg-surface">
@@ -2064,20 +2169,8 @@ export function App() {
 
               {currentTabs.map((tab, index) => {
                 const isActive = tab.id === currentActiveTabId
-                const claudeInfo =
-                  tab.kind === 'terminal' && tab.pid
-                    ? claudeSessions.find((s) => s.shellPid === tab.pid) ?? null
-                    : null
-                const codexInfo =
-                  tab.kind === 'terminal' && tab.pid
-                    ? codexSessions.find((s) => s.shellPid === tab.pid) ?? null
-                    : null
-                const isClaude = tab.kind === 'terminal' && (claudeInfo !== null || isClaudeProcess(tab.processName))
-                const isCodex = tab.kind === 'terminal' && (codexInfo !== null || isCodexProcess(tab.processName))
-                const isOpenCode = tab.kind === 'terminal' && isOpenCodeProcess(tab.processName)
-                const isAgent = isClaude || isCodex || isOpenCode
-                const agentInfo = isCodex ? codexInfo : claudeInfo
-                const agentPrompt = (agentInfo as ClaudeSessionInfo | CodexSessionInfo | null)?.prompt
+                const tabAgent =
+                  tab.kind === 'terminal' ? getTerminalAgent(tab, claudeSessions, codexSessions) : null
                 const editorDocument = tab.kind === 'editor' ? editorDocuments[tab.filePath] : null
                 const editorDirty = tab.kind === 'editor' && editorDocument
                   ? editorDocument.value !== editorDocument.savedValue
@@ -2106,44 +2199,26 @@ export function App() {
                     <span className="relative flex size-3.5 shrink-0 items-center justify-center">
                       {tab.kind === 'editor' || tab.kind === 'git-diff' ? (
                         <VscFile className="size-3.5" />
-                      ) : isAgent ? (
-                        isClaude ? (
-                          <BsClaude
-                            className={cn(
-                              'size-2.5',
-                              agentInfo?.status === 'working' && 'text-green-400',
-                              agentInfo?.status === 'idle' && 'text-red-400'
-                            )}
-                          />
-                        ) : (
-                          <span
-                            className={cn(
-                              'text-[10px] font-bold',
-                              agentInfo?.status === 'working' && 'text-green-400',
-                              agentInfo?.status === 'idle' && 'text-red-400'
-                            )}
-                          >
-                            {isOpenCode ? 'O' : 'C'}
-                          </span>
-                        )
+                      ) : tabAgent?.agent ? (
+                        <AgentIcon agent={tabAgent.agent} state={tabAgent.state} className="size-2.5" />
                       ) : (
                         <VscTerminalBash className="size-3.5" />
                       )}
-                      {isAgent && agentInfo ? (
+                      {tabAgent?.agent && tabAgent.state ? (
                         <span
                           className={cn(
                             'absolute -bottom-0.5 -right-0.5 size-1.5 rounded-full ring-1 ring-surface',
-                            agentInfo.status === 'working' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
+                            tabAgent.state === 'active' ? 'bg-green-400' : 'bg-red-400 animate-pulse'
                           )}
-                          title={agentInfo.status === 'working' ? 'Working...' : 'Needs input'}
+                          title={tabAgent.state === 'active' ? 'Active' : 'Inactive'}
                         />
                       ) : null}
                     </span>
                     <span className="truncate">
                       {tab.kind === 'editor' || tab.kind === 'git-diff'
                         ? tab.title
-                        : isAgent
-                        ? (agentInfo?.name ?? agentPrompt ?? (isOpenCode ? 'OpenCode' : isCodex ? 'Codex' : 'Claude'))
+                        : tabAgent?.agent
+                        ? (tabAgent.info?.name ?? tabAgent.prompt ?? getAgentDisplayName(tabAgent.agent))
                         : (selectedWorkspace?.branch ?? selectedWorkspace?.name ?? 'Terminal')}
                     </span>
                     {editorDirty ? (

@@ -8,10 +8,12 @@ import { EventEmitter } from 'node:events'
 import { spawn, type IPty } from 'node-pty'
 
 import type {
+  AgentProcessKind,
   CreateTerminalSessionInput,
   TerminalDataEvent,
   TerminalExitEvent,
-  TerminalProcessEvent
+  TerminalProcessEvent,
+  TerminalProcessState
 } from '../shared/contracts'
 
 const TMUX_SOCKET = 'mstry'
@@ -58,6 +60,8 @@ interface TerminalSession {
   cwd: string
   process: IPty
   lastProcessName: string
+  lastProcessAgent: AgentProcessKind | null
+  lastProcessState: TerminalProcessState
   lastDataTimestamp: number
 }
 
@@ -70,6 +74,67 @@ interface TerminalManagerEvents {
 interface TmuxSessionInfo {
   name: string
   attached: boolean
+}
+
+interface ProcessInfo {
+  pid: number
+  ppid: number
+  command: string
+}
+
+interface ProcessSnapshot {
+  processName: string
+  processAgent: AgentProcessKind | null
+  processState: TerminalProcessState
+}
+
+const getCommandBaseName = (command: string): string => {
+  const token = command.trim().split(/\s+/)[0] ?? ''
+  return token.split('/').pop()?.toLowerCase() ?? ''
+}
+
+const hasCommandArg = (command: string, executable: string): boolean =>
+  new RegExp(`(?:^|\\s)(?:\\S*/)?${executable}(?:\\s|$)`, 'i').test(command)
+
+const detectAgentFromCommand = (command: string): AgentProcessKind | null => {
+  const normalized = command.toLowerCase()
+  const baseName = getCommandBaseName(command)
+
+  if (
+    baseName === 'claude' ||
+    (baseName === 'node' && hasCommandArg(command, 'claude')) ||
+    normalized.includes('@anthropic-ai/claude-code') ||
+    normalized.includes('/claude-code/')
+  ) {
+    return 'claude'
+  }
+
+  if (
+    baseName === 'codex' ||
+    (baseName === 'node' && hasCommandArg(command, 'codex')) ||
+    normalized.includes('@openai/codex') ||
+    normalized.includes('/node_modules/.bin/codex')
+  ) {
+    return 'codex'
+  }
+
+  if (
+    baseName === 'opencode' ||
+    (baseName === 'node' && hasCommandArg(command, 'opencode')) ||
+    normalized.includes('/opencode-ai/')
+  ) {
+    return 'opencode'
+  }
+
+  if (
+    baseName === 'gemini' ||
+    (baseName === 'node' && hasCommandArg(command, 'gemini')) ||
+    normalized.includes('@google/gemini-cli')
+  ) {
+    return 'gemini'
+  }
+
+  return null
 }
 
 export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
@@ -120,6 +185,8 @@ export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
       cwd: input.cwd,
       process: ptyProcess,
       lastProcessName: '',
+      lastProcessAgent: null,
+      lastProcessState: 'inactive',
       lastDataTimestamp: Date.now()
     }
 
@@ -142,6 +209,8 @@ export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
       cwd: '',
       process: ptyProcess,
       lastProcessName: '',
+      lastProcessAgent: null,
+      lastProcessState: 'inactive',
       lastDataTimestamp: Date.now()
     }
 
@@ -352,32 +421,105 @@ export class TerminalManager extends EventEmitter<TerminalManagerEvents> {
   }
 
   private pollProcessNames() {
+    const processTable = this.readProcessTable()
+
     for (const session of this.sessions.values()) {
-      let processName: string
+      let snapshot: ProcessSnapshot
       try {
-        // Query the tmux pane's foreground process — more accurate than
-        // node-pty's .process which would just return "tmux".
-        const output = execFileSync(
-          'tmux',
-          [
-            ...TMUX_BASE_ARGS,
-            'list-panes',
-            '-t',
-            session.tmuxSessionName,
-            '-F',
-            '#{pane_current_command}'
-          ],
-          { encoding: 'utf8' }
-        )
-        processName = output.trim().split('\n')[0] ?? ''
+        snapshot = this.getProcessSnapshot(session, processTable)
       } catch {
         continue
       }
 
-      if (processName !== session.lastProcessName) {
-        session.lastProcessName = processName
-        this.emit('processChange', { sessionId: session.id, processName })
+      if (
+        snapshot.processName !== session.lastProcessName ||
+        snapshot.processAgent !== session.lastProcessAgent ||
+        snapshot.processState !== session.lastProcessState
+      ) {
+        session.lastProcessName = snapshot.processName
+        session.lastProcessAgent = snapshot.processAgent
+        session.lastProcessState = snapshot.processState
+        this.emit('processChange', { sessionId: session.id, ...snapshot })
       }
     }
+  }
+
+  private getProcessSnapshot(session: TerminalSession, processTable: ProcessInfo[]): ProcessSnapshot {
+    const output = execFileSync(
+      'tmux',
+      [
+        ...TMUX_BASE_ARGS,
+        'list-panes',
+        '-t',
+        session.tmuxSessionName,
+        '-F',
+        '#{pane_pid}\t#{pane_current_command}'
+      ],
+      { encoding: 'utf8' }
+    )
+    const [panePidText = '', paneCommand = ''] = output.trim().split('\n')[0]?.split('\t') ?? []
+    const panePid = Number.parseInt(panePidText, 10)
+    const paneAgent = detectAgentFromCommand(paneCommand)
+
+    if (!Number.isFinite(panePid) || processTable.length === 0) {
+      return {
+        processName: paneCommand,
+        processAgent: paneAgent,
+        processState: paneAgent ? 'active' : 'inactive'
+      }
+    }
+
+    const descendants = this.getDescendantProcesses(panePid, processTable)
+    const agentProcess = descendants.find((processInfo) => detectAgentFromCommand(processInfo.command))
+    const processAgent = agentProcess ? detectAgentFromCommand(agentProcess.command) : paneAgent
+    const processName =
+      processAgent ??
+      (agentProcess ? getCommandBaseName(agentProcess.command) || paneCommand : paneCommand)
+
+    return {
+      processName,
+      processAgent,
+      processState: processAgent ? 'active' : 'inactive'
+    }
+  }
+
+  private readProcessTable(): ProcessInfo[] {
+    try {
+      const output = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' })
+      return output
+        .split('\n')
+        .map((line) => {
+          const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/)
+          if (!match) return null
+          return {
+            pid: Number.parseInt(match[1], 10),
+            ppid: Number.parseInt(match[2], 10),
+            command: match[3]
+          }
+        })
+        .filter((processInfo): processInfo is ProcessInfo => processInfo !== null)
+    } catch {
+      return []
+    }
+  }
+
+  private getDescendantProcesses(rootPid: number, processTable: ProcessInfo[]): ProcessInfo[] {
+    const byParent = new Map<number, ProcessInfo[]>()
+    for (const processInfo of processTable) {
+      const children = byParent.get(processInfo.ppid) ?? []
+      children.push(processInfo)
+      byParent.set(processInfo.ppid, children)
+    }
+
+    const descendants: ProcessInfo[] = []
+    const queue = byParent.get(rootPid) ? [...byParent.get(rootPid)!] : []
+    while (queue.length > 0) {
+      const next = queue.shift()!
+      descendants.push(next)
+      const children = byParent.get(next.pid)
+      if (children) queue.push(...children)
+    }
+
+    return descendants
   }
 }

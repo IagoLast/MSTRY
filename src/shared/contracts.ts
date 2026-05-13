@@ -100,9 +100,14 @@ export interface TerminalExitEvent {
   exitCode: number | null
 }
 
+export type AgentProcessKind = 'claude' | 'codex' | 'opencode' | 'gemini'
+export type TerminalProcessState = 'active' | 'inactive'
+
 export interface TerminalProcessEvent {
   sessionId: string
   processName: string
+  processAgent: AgentProcessKind | null
+  processState: TerminalProcessState
 }
 
 export interface ClaudeSessionInfo {

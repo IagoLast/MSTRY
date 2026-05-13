@@ -25,6 +25,32 @@
   /* Error */
   --error-fg: #b91c1c;
 
+  /* Git */
+  --git-added-fg: #15803d;
+  --git-added-bg: rgba(21, 128, 61, 0.07);
+  --git-added-bg-hover: rgba(21, 128, 61, 0.11);
+  --git-added-accent: rgba(21, 128, 61, 0.35);
+  --git-modified-fg: #9a6700;
+  --git-modified-bg: rgba(202, 138, 4, 0.08);
+  --git-modified-bg-hover: rgba(202, 138, 4, 0.13);
+  --git-modified-accent: rgba(202, 138, 4, 0.38);
+  --git-deleted-fg: #b91c1c;
+  --git-deleted-bg: rgba(185, 28, 28, 0.07);
+  --git-deleted-bg-hover: rgba(185, 28, 28, 0.11);
+  --git-deleted-accent: rgba(185, 28, 28, 0.35);
+  --git-renamed-fg: #2563eb;
+  --git-renamed-bg: rgba(37, 99, 235, 0.07);
+  --git-renamed-bg-hover: rgba(37, 99, 235, 0.11);
+  --git-renamed-accent: rgba(37, 99, 235, 0.32);
+  --git-conflicted-fg: #c2410c;
+  --git-conflicted-bg: rgba(194, 65, 12, 0.08);
+  --git-conflicted-bg-hover: rgba(194, 65, 12, 0.13);
+  --git-conflicted-accent: rgba(194, 65, 12, 0.42);
+  --git-directory-fg: #3f3f46;
+  --git-directory-bg: rgba(63, 63, 70, 0.06);
+  --git-directory-bg-hover: rgba(63, 63, 70, 0.1);
+  --git-directory-accent: rgba(63, 63, 70, 0.25);
+
   /* Focus */
   --focus-ring-color: rgba(0, 0, 0, 0.15);
 
@@ -53,6 +79,31 @@
     --overlay-hover-color: rgba(255, 255, 255, 0.06);
 
     --error-fg: #fecaca;
+
+    --git-added-fg: #86efac;
+    --git-added-bg: rgba(34, 197, 94, 0.1);
+    --git-added-bg-hover: rgba(34, 197, 94, 0.15);
+    --git-added-accent: rgba(34, 197, 94, 0.4);
+    --git-modified-fg: #facc15;
+    --git-modified-bg: rgba(234, 179, 8, 0.1);
+    --git-modified-bg-hover: rgba(234, 179, 8, 0.15);
+    --git-modified-accent: rgba(234, 179, 8, 0.38);
+    --git-deleted-fg: #fca5a5;
+    --git-deleted-bg: rgba(248, 113, 113, 0.1);
+    --git-deleted-bg-hover: rgba(248, 113, 113, 0.15);
+    --git-deleted-accent: rgba(248, 113, 113, 0.38);
+    --git-renamed-fg: #93c5fd;
+    --git-renamed-bg: rgba(96, 165, 250, 0.1);
+    --git-renamed-bg-hover: rgba(96, 165, 250, 0.15);
+    --git-renamed-accent: rgba(96, 165, 250, 0.36);
+    --git-conflicted-fg: #fdba74;
+    --git-conflicted-bg: rgba(251, 146, 60, 0.1);
+    --git-conflicted-bg-hover: rgba(251, 146, 60, 0.15);
+    --git-conflicted-accent: rgba(251, 146, 60, 0.42);
+    --git-directory-fg: #d4d4d8;
+    --git-directory-bg: rgba(161, 161, 170, 0.08);
+    --git-directory-bg-hover: rgba(161, 161, 170, 0.12);
+    --git-directory-accent: rgba(161, 161, 170, 0.28);
 
     --focus-ring-color: rgba(255, 255, 255, 0.2);
 
@@ -144,6 +195,59 @@
   background-color: var(--terminal-bg) !important;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.git-change-row {
+  --git-change-bg: transparent;
+  --git-change-bg-hover: var(--item-hover);
+  --git-change-accent: transparent;
+
+  background-color: var(--git-change-bg);
+  border-left-color: var(--git-change-accent);
+}
+
+.git-change-row:hover {
+  background-color: var(--git-change-bg-hover);
+}
+
+.git-change-row.bg-item-active {
+  background-color: var(--item-active);
+}
+
+.git-change-row--added {
+  --git-change-bg: var(--git-added-bg);
+  --git-change-bg-hover: var(--git-added-bg-hover);
+  --git-change-accent: var(--git-added-accent);
+}
+
+.git-change-row--modified {
+  --git-change-bg: var(--git-modified-bg);
+  --git-change-bg-hover: var(--git-modified-bg-hover);
+  --git-change-accent: var(--git-modified-accent);
+}
+
+.git-change-row--deleted {
+  --git-change-bg: var(--git-deleted-bg);
+  --git-change-bg-hover: var(--git-deleted-bg-hover);
+  --git-change-accent: var(--git-deleted-accent);
+}
+
+.git-change-row--renamed {
+  --git-change-bg: var(--git-renamed-bg);
+  --git-change-bg-hover: var(--git-renamed-bg-hover);
+  --git-change-accent: var(--git-renamed-accent);
+}
+
+.git-change-row--conflicted {
+  --git-change-bg: var(--git-conflicted-bg);
+  --git-change-bg-hover: var(--git-conflicted-bg-hover);
+  --git-change-accent: var(--git-conflicted-accent);
+}
+
+.git-change-row--directory {
+  --git-change-bg: var(--git-directory-bg);
+  --git-change-bg-hover: var(--git-directory-bg-hover);
+  --git-change-accent: var(--git-directory-accent);
 }
 
 /* Settings drawer */

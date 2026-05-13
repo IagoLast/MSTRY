@@ -1,9 +1,20 @@
 import { app } from 'electron'
 import { access, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import os from 'node:os'
 import path from 'node:path'
 
 import { resolveGitRoot } from './git'
 import type { AppConfig, Project, WorkspaceMode } from '../shared/contracts'
+
+const FORBIDDEN_PROJECT_PATHS = new Set<string>(
+  [
+    path.parse(process.cwd()).root,
+    os.homedir(),
+    os.tmpdir()
+  ].map((candidate) => path.resolve(candidate))
+)
+
+const isForbiddenProjectPath = (resolvedPath: string) => FORBIDDEN_PROJECT_PATHS.has(resolvedPath)
 
 interface StoredConfig {
   activeProjectPath: string | null
@@ -42,6 +53,11 @@ const normalizeProjectPath = async (candidate: string | null) => {
   }
 
   const resolved = path.resolve(candidate.trim())
+
+  if (isForbiddenProjectPath(resolved)) {
+    return null
+  }
+
   return (await isExistingDirectory(resolved)) ? resolved : null
 }
 
@@ -135,6 +151,12 @@ export const getAppConfig = async (): Promise<AppConfig> => {
 }
 
 export const addProjectPath = async (projectPath: string): Promise<AppConfig> => {
+  const resolved = projectPath ? path.resolve(projectPath.trim()) : null
+
+  if (resolved && isForbiddenProjectPath(resolved)) {
+    throw new Error('That path is too broad to add as a project (root, home or tmp).')
+  }
+
   const normalized = await normalizeProjectPath(projectPath)
 
   if (!normalized) {
