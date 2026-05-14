@@ -664,6 +664,37 @@ export function App() {
   }, [defaultTabCommand, selectedWorkspacePath, terminalTabs])
 
   useEffect(() => {
+    if (workspacesByProjectQuery.isPending || !workspacesByProjectQuery.data) return
+
+    const projects = appConfigQuery.data?.projects ?? []
+    const workspacesByProject = workspacesByProjectQuery.data
+
+    const validPaths = new Set<string>()
+    for (const project of projects) {
+      validPaths.add(project.rootPath)
+      for (const ws of workspacesByProject[project.rootPath] ?? []) {
+        validPaths.add(ws.path)
+      }
+    }
+
+    const staleTabs = tabsRef.current.filter((tab) => {
+      if (tab.kind !== 'terminal') return false
+      const owner = findOwnerProject(projects, tab.workspacePath)
+      if (!owner) return false
+      return !validPaths.has(tab.workspacePath)
+    }) as TerminalTab[]
+
+    if (staleTabs.length === 0) return
+
+    const bridge = getElectronBridge()
+    const staleIds = new Set(staleTabs.map((tab) => {
+      if (tab.tmuxSessionName) void bridge.terminal.destroySession(tab.tmuxSessionName)
+      return tab.id
+    }))
+    commitTabState(tabsRef.current.filter((tab) => !staleIds.has(tab.id)))
+  }, [appConfigQuery.data?.projects, workspacesByProjectQuery.isPending, workspacesByProjectQuery.data, commitTabState])
+
+  useEffect(() => {
     const bridge = getElectronBridge()
     const off = bridge.terminal.onProcessChange((event) => {
       setTabs((current) =>
